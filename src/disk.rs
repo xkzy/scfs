@@ -16,6 +16,27 @@ pub struct Disk {
     pub capacity_bytes: u64,
     pub used_bytes: u64,
     pub health: DiskHealth,
+    /// Kind of backing (directory or block device)
+    #[serde(default)]
+    pub kind: DiskKind,
+
+    /// In-memory allocator and index (not serialized)
+    #[serde(skip)]
+    pub allocator: Option<crate::allocator::BitmapAllocator>,
+    #[serde(skip)]
+    pub free_index: Option<crate::free_extent::FreeExtentIndex>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DiskKind {
+    Directory,
+    BlockDevice,
+}
+
+impl Default for DiskKind {
+    fn default() -> Self {
+        DiskKind::Directory
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,19 +87,45 @@ impl Disk {
         let uuid = Uuid::new_v4();
         let capacity_bytes = Self::get_available_space(&path)?;
         
-        // Create fragments directory
+        // Create fragments directory (only for directory-backed disks)
         let fragments_dir = path.join("fragments");
         fs::create_dir_all(&fragments_dir)
             .context("Failed to create fragments directory")?;
         
+        let mut disk = Disk {
+            uuid,
+            path: path.clone(),
+            capacity_bytes,
+            used_bytes: 0,
+            health: DiskHealth::Healthy,
+            kind: DiskKind::Directory,
+            allocator: None,
+            free_index: None,
+        };
+
+        // Initialize allocator and free-index for directory-backed disk
+        disk.init_allocator_and_index()?;
+        disk.save()?;
+        Ok(disk)
+    }
+
+    /// Initialize a disk backed by a raw block device
+    pub fn from_block_device(path: PathBuf) -> Result<Self> {
+        // Do not create directories on raw devices
+        let uuid = Uuid::new_v4();
+        let capacity_bytes = Self::get_block_device_size(&path)?;
+
         let disk = Disk {
             uuid,
             path,
             capacity_bytes,
             used_bytes: 0,
             health: DiskHealth::Healthy,
+            kind: DiskKind::BlockDevice,
+            allocator: None,
+            free_index: None,
         };
-        
+
         disk.save()?;
         Ok(disk)
     }
@@ -88,8 +135,18 @@ impl Disk {
         let metadata_path = path.join("disk.json");
         let contents = fs::read_to_string(&metadata_path)
             .context("Failed to read disk metadata")?;
-        let disk: Disk = serde_json::from_str(&contents)
+        let mut disk: Disk = serde_json::from_str(&contents)
             .context("Failed to parse disk metadata")?;
+
+        // Initialize runtime-only fields
+        disk.allocator = None;
+        disk.free_index = None;
+
+        // If directory-backed, attempt to load allocator and free-index
+        if disk.kind == DiskKind::Directory {
+            let _ = disk.init_allocator_and_index();
+        }
+
         Ok(disk)
     }
     
@@ -117,6 +174,78 @@ impl Disk {
         
         let available_bytes = statvfs.blocks_available() * statvfs.block_size();
         Ok(available_bytes)
+    }
+
+    fn get_block_device_size(path: &Path) -> Result<u64> {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::io::AsRawFd;
+        use std::fs::OpenOptions;
+        use libc;
+
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_RDONLY)
+            .open(path)
+            .context("Failed to open block device")?;
+        let fd = file.as_raw_fd();
+
+        let mut size: u64 = 0;
+        const BLKGETSIZE64: libc::c_ulong = 0x80081272;
+        let ret = unsafe { libc::ioctl(fd, BLKGETSIZE64 as _, &mut size) };
+        if ret != 0 {
+            return Err(anyhow!("BLKGETSIZE64 ioctl failed"));
+        }
+        Ok(size)
+    }
+
+    /// Initialize allocator and free-extent index for directory-backed disk
+    fn init_allocator_and_index(&mut self) -> Result<()> {
+        // Use default allocation unit = 1 MiB (matching extent size)
+        const UNIT_SIZE: u64 = 1024 * 1024;
+        let total_units = self.capacity_bytes / UNIT_SIZE;
+        let alloc_path = self.path.join("allocator.bin");
+        let index_path = self.path.join("free_extent.bin");
+
+        // If allocator file exists, load it; otherwise create new allocator and persist
+        let allocator = if alloc_path.exists() {
+            crate::allocator::BitmapAllocator::load_from_path(&alloc_path)?
+        } else {
+            crate::allocator::BitmapAllocator::new(UNIT_SIZE, total_units, Some(alloc_path.clone()))?
+        };
+
+        // If free extent index exists, load it; otherwise build from allocator free bits
+        let mut index = if index_path.exists() {
+            crate::free_extent::FreeExtentIndex::new(Some(index_path.clone()))?
+        } else {
+            let mut idx = crate::free_extent::FreeExtentIndex::new(Some(index_path.clone()))?;
+            // scan allocator for free runs
+            let mut run_start: Option<u64> = None;
+            let mut run_len: u64 = 0;
+            for unit in 0..total_units {
+                if allocator.is_free(unit) {
+                    if run_start.is_none() {
+                        run_start = Some(unit);
+                        run_len = 1;
+                    } else {
+                        run_len += 1;
+                    }
+                } else if let Some(rs) = run_start {
+                    idx.insert_run(rs, run_len)?;
+                    run_start = None;
+                    run_len = 0;
+                }
+            }
+            if let Some(rs) = run_start {
+                if run_len > 0 {
+                    idx.insert_run(rs, run_len)?;
+                }
+            }
+            idx
+        };
+
+        self.allocator = Some(allocator);
+        self.free_index = Some(index);
+        Ok(())
     }
     
     /// Update used space
@@ -162,6 +291,11 @@ impl Disk {
         fragment_index: usize,
         data: &[u8],
     ) -> Result<()> {
+        // For now, block device backed disks cannot accept fragment writes
+        if self.kind == DiskKind::BlockDevice {
+            return Err(anyhow!("Writes to raw block devices are not yet supported (allocator not implemented)."));
+        }
+
         let fragment_path = self.fragment_path(extent_uuid, fragment_index);
         
         #[cfg(test)]

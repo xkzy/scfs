@@ -12,7 +12,7 @@ fn test_inode_checksum_verification() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
     let pool_dir = temp_dir.path().to_path_buf();
     
-    let metadata = MetadataManager::new(pool_dir.clone())?;
+    let mut metadata = MetadataManager::new(pool_dir.clone())?;
     
     // Create and save an inode
     let inode = Inode::new_file(42, 1, "test.txt".to_string());
@@ -46,7 +46,7 @@ fn test_extent_map_checksum_verification() -> Result<()> {
     let temp_dir = tempfile::tempdir()?;
     let pool_dir = temp_dir.path().to_path_buf();
     
-    let metadata = MetadataManager::new(pool_dir.clone())?;
+    let mut metadata = MetadataManager::new(pool_dir.clone())?;
     
     // Create and save an extent map
     let extent_map = ExtentMap {

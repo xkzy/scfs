@@ -318,7 +318,8 @@ Metadata updates are atomic via write-then-rename pattern. Fragment writes are v
 
 - **Phase 1.3**: Metadata checksums + Orphan GC (in progress)
 - **Phase 2**: Enhanced failure handling with targeted rebuilds
-- **Phase 3**: Background scrubbing and self-healing
+- **Phase 3**: Background scrubbing and self-healing — ⚠️ Needs Hardening (requires device-aware scrubbing for raw device support)
+- **Raw Block Device Support**: Add safe raw device support (on-device allocator and superblock layout, O_DIRECT/O_SYNC handling, alignment-aware IO, device validation and explicit `--device`/`--force` semantics, loopback integration tests). See [PHASE_18_RAW_BLOCK_DEVICE.md](PHASE_18_RAW_BLOCK_DEVICE.md) for milestones and checklist.
 - **Phase 4**: Structured logging and Prometheus metrics
 - **Phase 5**: Performance optimizations (see Phase 14: Multi-level caching, Phase 10: tiered placement & parallel I/O, Phase 15: concurrent read/write optimization)
 - **Phase 6**: Snapshots and point-in-time recovery

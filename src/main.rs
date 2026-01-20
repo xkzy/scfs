@@ -3,6 +3,10 @@ mod config;
 mod crash_sim;
 mod diagnostics;
 mod disk;
+mod device_io;
+mod allocator;
+mod free_extent;
+mod metadata_btree;
 mod extent;
 mod fuse_impl;
 mod gc;
@@ -52,7 +56,7 @@ fn main() -> Result<()> {
     
     match cli.command {
         Commands::Init { pool } => cmd_init(&pool, json_output),
-        Commands::AddDisk { pool, disk } => cmd_add_disk(&pool, &disk, json_output),
+        Commands::AddDisk { pool, disk, device } => cmd_add_disk(&pool, &disk, device, json_output),
         Commands::RemoveDisk { pool, disk } => cmd_remove_disk(&pool, &disk, json_output),
         Commands::ListDisks { pool } => cmd_list_disks(&pool, json_output),
         Commands::ListExtents { pool } => cmd_list_extents(&pool, json_output),
@@ -308,22 +312,42 @@ fn cmd_init(pool_dir: &Path, _json_output: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_add_disk(pool_dir: &Path, disk_path: &Path, _json_output: bool) -> Result<()> {
+fn cmd_add_disk(pool_dir: &Path, disk_path: &Path, device: bool, _json_output: bool) -> Result<()> {
     println!("Adding disk {:?} to pool {:?}", disk_path, pool_dir);
-    
-    // Create disk directory if needed
-    fs::create_dir_all(disk_path).context("Failed to create disk directory")?;
-    
+
+    // If this is a block device, require explicit --device flag
+    if disk_path.exists() {
+        let md = fs::metadata(disk_path)
+            .context("Failed to stat disk path")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            if md.file_type().is_block_device() && !device {
+                return Err(anyhow!("Path {:?} is a block device. Pass --device to confirm adding a raw device.", disk_path));
+            }
+        }
+    }
+
+    // Create directory for normal directories (do not attempt for block devices)
+    if !device {
+        fs::create_dir_all(disk_path).context("Failed to create disk directory")?;
+    }
+
     // Initialize disk
-    let disk = Disk::new(disk_path.to_path_buf())?;
+    let disk = if device {
+        Disk::from_block_device(disk_path.to_path_buf())?
+    } else {
+        Disk::new(disk_path.to_path_buf())?
+    };
+
     println!("  Disk UUID: {}", disk.uuid);
     println!("  Capacity: {} MB", disk.capacity_bytes / 1024 / 1024);
-    
+
     // Add to pool
     let mut pool = DiskPool::load(pool_dir)?;
     pool.add_disk(disk_path.to_path_buf());
     pool.save(pool_dir)?;
-    
+
     println!("✓ Disk added");
     Ok(())
 }

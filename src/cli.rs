@@ -28,9 +28,13 @@ pub enum Commands {
         #[arg(short, long)]
         pool: PathBuf,
         
-        /// Disk directory
+        /// Disk directory or block device path
         #[arg(short, long)]
         disk: PathBuf,
+
+        /// Add a raw block device (explicit confirmation required)
+        #[arg(long, default_value_t = false)]
+        device: bool,
     },
     
     /// Remove a disk from the pool

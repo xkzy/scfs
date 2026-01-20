@@ -23,12 +23,43 @@ Successfully implemented a **fully production-hardened, crash-consistent filesys
 - Phase 9: Multi-OS Support (Cross-platform compatibility)
 - Phase 10: Mixed Storage Speed Optimization (Tiered placement & caching)
 - Phase 11: Kernel-Level Implementation (Performance optimization)
-- Phase 12: Storage Optimization (Defragmentation & TRIM)
+- Phase 12: Storage Optimization (Defragmentation & TRIM) — ⚠️ Needs Hardening (TRIM/defrag semantics impacted by raw device work)
+- Phase 18: Raw Block Device Support (safe device-backed disks, O_DIRECT/trim support, alignment-aware I/O, on-device allocator/superblock, explicit CLI safety flags, loopback device integration tests) — [PHASE_18_RAW_BLOCK_DEVICE.md](PHASE_18_RAW_BLOCK_DEVICE.md)
+
+---
+
+## PHASE 18: RAW BLOCK DEVICE SUPPORT [PLANNED]
+
+**Priority**: High (Safety-first)
+**Estimated Effort**: 3-4 sprints (6-8 weeks)
+
+**Short goal**: Add safe, explicit support for raw block devices while preserving data safety. The work is split into detection & safe stub, I/O primitives & alignment, on-device allocator, and integration/testing.
+
+**Deliverables & Checklist**
+- [ ] Phase 18.1: Detection & Safe Stubbing (add disk kind, detect S_IFBLK, `--device` CLI, safe write rejection)
+- [ ] Phase 18.2: I/O primitives & Alignment (O_DIRECT/O_SYNC, alignment helpers, tests)
+- [ ] Phase 18.3: On-device layout & Allocator (superblock, allocator, atomic commit protocol, exclusive lock) — IN PROGRESS
+  - [ ] Phase 18.3.1: Bitmap allocator (fast free/used checks) — IN PROGRESS
+  - [ ] Phase 18.3.2: Free-extent B-tree (find contiguous runs)
+  - [ ] Phase 18.3.3: Metadata B-trees (inode table, extent→fragment mapping, policy metadata) — IN PROGRESS
+    - [x] 18.3.3.1: PersistedBTree generic wrapper (done)
+    - [x] 18.3.3.2: Inode table integration (done)
+    - [x] 18.3.3.3: Extent->fragment mapping integration (done)
+    - [ ] 18.3.3.4: Policy metadata store
+
+
+- [ ] Phase 18.4: Integration & Safety (TRIM, defrag hooks, device-aware scrub, docs, metrics)
+- [ ] Integration tests: loopback devices, crash-power-loss scenarios, alignment and O_DIRECT tests
+
+**Dependencies**: Phase 12 (Storage Optimization), Phase 3 (Background Scrubbing), Phase 1.2 Write Safety (alignment/flush semantics)
+
+**Acceptance Criteria**: See `PHASE_18_RAW_BLOCK_DEVICE.md` for full acceptance criteria and test matrices.
+
 - Phase 13: Multi-Node Network Distribution (Cross-node replication & rebalancing)
 - Phase 14: Multi-Level Caching Optimization (L1/L2/L3 caches & coherence)
 - Phase 15: Concurrent Read/Write Optimization (Locking, batching, parallelism)
 - Phase 16: Full FUSE Operation Support (xattrs, mmap, locks, fallocate, ACLs, ioctls)
-- Phase 17: Automated Intelligent Policies (ML-driven policy engine & automation) 
+- Phase 17: Automated Intelligent Policies (ML-driven policy engine & automation)   
 
 ### Final Metrics
 - **Lines of Code**: 8,955 lines of Rust
@@ -51,6 +82,8 @@ Successfully implemented a **fully production-hardened, crash-consistent filesys
 - Per-extent rebuild capability
 
 ### ⚠️ Needs Hardening
+- Storage Optimization (Phase 12: Defragmentation & TRIM) — Requires device-aware TRIM/defragmentation support for raw devices
+- Background scrubbing & scrubd (Phase 3.3) — Needs to support block-device layouts (alignment-aware verification, device offset reads, O_DIRECT semantics)
 - Metadata lacks full transactionality
 - No versioned metadata roots
 - Recovery is manual, not automatic
@@ -327,6 +360,9 @@ Successfully implemented a **fully production-hardened, crash-consistent filesys
 - Conservative repair strategy
 
 ### 3.3 Background Scrubbing 🔜
+
+⚠️ Needs Hardening: Background scrubbing must be revised to support block-device layouts (alignment-aware verification, device offset reads, and O_DIRECT/trim-aware IO).
+
 - [ ] Continuous low-priority scrub daemon (`scrubd`)
   - Periodic verification windows with configurable rate and IO throttling
   - Per-disk and per-extent scheduling, prioritize hot/warm/cold as configured

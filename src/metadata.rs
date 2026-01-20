@@ -85,6 +85,9 @@ pub struct ExtentMap {
 pub struct MetadataManager {
     pool_dir: PathBuf,
     next_ino: u64,
+    // persisted btrees for fast metadata lookup
+    pub inode_table: crate::metadata_btree::PersistedBTree<u64, Inode>,
+    pub extent_map_table: crate::metadata_btree::PersistedBTree<u64, ExtentMap>,
 }
 
 impl MetadataManager {
@@ -146,9 +149,18 @@ impl MetadataManager {
         // Load or initialize next_ino
         let next_ino = Self::load_next_ino(&pool_dir).unwrap_or(2); // 1 is reserved for root
         
+        // Initialize persisted B-trees
+        let inode_btree_path = pool_dir.join("metadata").join("inodes.btree");
+        let extent_map_btree_path = pool_dir.join("metadata").join("extent_maps.btree");
+
+        let inode_table = crate::metadata_btree::PersistedBTree::new(Some(inode_btree_path))?;
+        let extent_map_table = crate::metadata_btree::PersistedBTree::new(Some(extent_map_btree_path))?;
+
         let mut manager = MetadataManager {
             pool_dir,
             next_ino,
+            inode_table,
+            extent_map_table,
         };
         
         // Ensure root directory exists
@@ -161,6 +173,8 @@ impl MetadataManager {
         if !self.inode_exists(1) {
             let root = Inode::new_dir(1, 1, String::from(""));
             self.save_inode(&root)?;
+            // also record in inode_table
+            self.inode_table.insert(1, root)?;
         }
         Ok(())
     }
@@ -213,20 +227,32 @@ impl MetadataManager {
         
         #[cfg(test)]
         check_crash_point(CrashPoint::AfterRename)?;
-        
+
+        // Also update persisted btree index
+        let _ = self.inode_table.insert(inode.ino, inode_with_checksum);
         Ok(())
     }
     
     pub fn load_inode(&self, ino: u64) -> Result<Inode> {
+        // Prefer file-based storage if present (so on-disk corruption is detectable);
+        // fallback to btree index if file is missing.
         let path = self.pool_dir.join("inodes").join(ino.to_string());
-        let contents = fs::read_to_string(path)?;
-        let inode: Inode = serde_json::from_str(&contents)?;
-        
-        // Verify checksum if present
-        Self::verify_inode_checksum(&inode)
-            .context(format!("Corrupted inode metadata for ino {}", ino))?;
-        
-        Ok(inode)
+        if path.exists() {
+            let contents = fs::read_to_string(path)?;
+            let inode: Inode = serde_json::from_str(&contents)?;
+            // Verify checksum if present
+            Self::verify_inode_checksum(&inode)
+                .context(format!("Corrupted inode metadata for ino {}", ino))?;
+            return Ok(inode);
+        }
+
+        // Fallback to btree index
+        if let Some(inode) = self.inode_table.get(&ino) {
+            Self::verify_inode_checksum(&inode).context(format!("Corrupted inode metadata for ino {}", ino))?;
+            return Ok(inode);
+        }
+
+        Err(anyhow!("Inode {} not found", ino))
     }
     
     pub fn inode_exists(&self, ino: u64) -> bool {
@@ -341,26 +367,40 @@ impl MetadataManager {
         check_crash_point(CrashPoint::BeforeRename)?;
         
         fs::rename(&temp_path, &path)?;
+        
+        // update persisted extent map table
+        let _ = self.extent_map_table.insert(map.ino, map_with_checksum);
         Ok(())
     }
     
     pub fn load_extent_map(&self, ino: u64) -> Result<ExtentMap> {
+        // Prefer file-based storage if present (so on-disk corruption is detectable);
+        // fallback to btree index if file is missing.
         let path = self.pool_dir.join("extent_maps").join(ino.to_string());
-        let contents = fs::read_to_string(&path).unwrap_or_else(|_| {
-            serde_json::to_string(&ExtentMap {
-                ino,
-                extents: Vec::new(),
-                checksum: None,
-            })
-            .unwrap()
-        });
-        let map: ExtentMap = serde_json::from_str(&contents)?;
-        
-        // Verify checksum if present
-        Self::verify_extent_map_checksum(&map)
-            .context(format!("Corrupted extent map metadata for ino {}", ino))?;
-        
-        Ok(map)
+        if path.exists() {
+            let contents = fs::read_to_string(&path).unwrap_or_else(|_| {
+                serde_json::to_string(&ExtentMap {
+                    ino,
+                    extents: Vec::new(),
+                    checksum: None,
+                })
+                .unwrap()
+            });
+            let map: ExtentMap = serde_json::from_str(&contents)?;
+            // Verify checksum if present
+            Self::verify_extent_map_checksum(&map)
+                .context(format!("Corrupted extent map metadata for ino {}", ino))?;
+            return Ok(map);
+        }
+
+        // Fallback to btree index
+        if let Some(map) = self.extent_map_table.get(&ino) {
+            Self::verify_extent_map_checksum(&map).context(format!("Corrupted extent map metadata for ino {}", ino))?;
+            return Ok(map);
+        }
+
+        // If neither exists, return an empty map
+        Ok(ExtentMap { ino, extents: Vec::new(), checksum: None })
     }
     
     pub fn delete_extent_map(&self, ino: u64) -> Result<()> {

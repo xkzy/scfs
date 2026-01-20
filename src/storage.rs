@@ -146,7 +146,7 @@ impl StorageEngine {
 
         // Persist metadata after all fragments are durable; roll back fragments if persistence fails
         if let Err(err) = (|| -> Result<()> {
-            let metadata = self.metadata.read().unwrap();
+            let mut metadata = self.metadata.write().unwrap();
             for extent in &written_extents {
                 metadata.save_extent(extent)?;
             }

@@ -74,6 +74,7 @@ fn main() -> Result<()> {
         Commands::Status { pool } => cmd_status(&pool, json_output),
         Commands::Metrics { pool } => cmd_metrics(&pool, json_output),
         Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint, json_output),
+        Commands::Benchmark { pool, file_size, operations } => cmd_benchmark(&pool, file_size, operations, json_output),
     }
 }
 
@@ -807,6 +808,91 @@ fn cmd_orphan_stats(pool_dir: &Path, _json_output: bool) -> Result<()> {
     if stats.old_count > 0 {
         println!();
         println!("Recommendation: Run 'cleanup-orphans' to reclaim space");
+    }
+    
+    Ok(())
+}
+
+fn cmd_benchmark(pool_dir: &Path, file_size: usize, operations: usize, json_output: bool) -> Result<()> {
+    use crate::perf::{Benchmark, PerfStats};
+    
+    if !json_output {
+        println!("Running DynamicFS Performance Benchmark");
+        println!("======================================");
+        println!("File size:   {} bytes", file_size);
+        println!("Operations:  {}", operations);
+        println!();
+    }
+    
+    let pool = DiskPool::load(pool_dir)?;
+    let disks = pool.load_disks()?;
+    let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
+    let storage = StorageEngine::new(metadata, disks);
+    
+    // Create test data
+    let test_data = vec![42u8; file_size];
+    
+    // Benchmark write operations
+    let write_bench = Benchmark::start("write");
+    for i in 0..operations {
+        let ino = 1000 + i as u64;
+        match storage.write_file(ino, &test_data, 0) {
+            Ok(_) => {},
+            Err(e) => {
+                log::warn!("Write operation {} failed: {}", i, e);
+            }
+        }
+    }
+    let write_elapsed = write_bench.elapsed_ms();
+    let mut write_stats = PerfStats::new("write");
+    write_stats.count = operations as u64;
+    write_stats.total_bytes = (file_size as u64) * (operations as u64);
+    write_stats.total_ms = write_elapsed;
+    
+    // Benchmark read operations
+    let read_bench = Benchmark::start("read");
+    for i in 0..operations {
+        let ino = 1000 + i as u64;
+        match storage.read_file(ino) {
+            Ok(_) => {},
+            Err(e) => {
+                log::warn!("Read operation {} failed: {}", i, e);
+            }
+        }
+    }
+    let read_elapsed = read_bench.elapsed_ms();
+    let mut read_stats = PerfStats::new("read");
+    read_stats.count = operations as u64;
+    read_stats.total_bytes = (file_size as u64) * (operations as u64);
+    read_stats.total_ms = read_elapsed;
+    
+    if json_output {
+        let bench_json = serde_json::json!({
+            "benchmark": "performance",
+            "file_size": file_size,
+            "operations": operations,
+            "write": {
+                "elapsed_ms": write_elapsed,
+                "throughput_mbps": write_stats.throughput_mbps(),
+                "ops_per_sec": write_stats.ops_per_sec()
+            },
+            "read": {
+                "elapsed_ms": read_elapsed,
+                "throughput_mbps": read_stats.throughput_mbps(),
+                "ops_per_sec": read_stats.ops_per_sec()
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&bench_json)?);
+    } else {
+        println!("Write Performance:");
+        println!("  Elapsed time:  {} ms", write_elapsed);
+        println!("  Throughput:    {:.2} MB/s", write_stats.throughput_mbps());
+        println!("  Operations:    {:.0} ops/sec", write_stats.ops_per_sec());
+        println!();
+        println!("Read Performance:");
+        println!("  Elapsed time:  {} ms", read_elapsed);
+        println!("  Throughput:    {:.2} MB/s", read_stats.throughput_mbps());
+        println!("  Operations:    {:.0} ops/sec", read_stats.ops_per_sec());
     }
     
     Ok(())

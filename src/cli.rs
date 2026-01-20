@@ -205,4 +205,19 @@ pub enum Commands {
         #[arg(short, long)]
         mountpoint: PathBuf,
     },
+    
+    /// Run performance benchmarks
+    Benchmark {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+        
+        /// File size for writes (bytes)
+        #[arg(short, long, default_value = "1048576")]
+        file_size: usize,
+        
+        /// Number of operations
+        #[arg(short, long, default_value = "10")]
+        operations: usize,
+    },
 }

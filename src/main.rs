@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod crash_sim;
+mod diagnostics;
 mod disk;
 mod extent;
 mod fuse_impl;

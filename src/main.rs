@@ -10,6 +10,7 @@ mod metadata_tx;
 mod metrics;
 #[cfg(test)]
 mod phase_1_3_tests;
+mod perf;
 mod placement;
 mod redundancy;
 pub mod scheduler;

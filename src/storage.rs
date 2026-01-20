@@ -7,6 +7,7 @@ use crate::metadata::{ExtentMap, Inode, MetadataManager};
 use crate::placement::PlacementEngine;
 use crate::redundancy;
 use crate::metrics::Metrics;
+use crate::scheduler::{ReplicaSelector, ReplicaSelectionStrategy};
 
 /// Storage engine handling read/write operations
 pub struct StorageEngine {
@@ -282,27 +283,63 @@ impl StorageEngine {
     fn read_fragments(&self, extent: &Extent, disks: &[Disk]) -> Result<Vec<Option<Vec<u8>>>> {
         let mut fragments = vec![None; extent.redundancy.fragment_count()];
         
+        // Group locations by fragment index to support smart replica selection
+        let mut fragments_by_index: Vec<Vec<(uuid::Uuid, usize)>> = 
+            vec![Vec::new(); extent.redundancy.fragment_count()];
+        
         for location in &extent.fragment_locations {
-            // Find the disk
-            let disk = disks
-                .iter()
-                .find(|d| d.uuid == location.disk_uuid)
-                .ok_or_else(|| anyhow!("Disk {} not found", location.disk_uuid))?;
-            
-            // Read fragment
-            match disk.read_fragment(&extent.uuid, location.fragment_index) {
-                Ok(data) => {
-                    fragments[location.fragment_index] = Some(data);
+            fragments_by_index[location.fragment_index].push((location.disk_uuid, location.fragment_index));
+        }
+        
+        // For each fragment index, try to read from best available replica
+        let strategy = ReplicaSelectionStrategy::Smart;
+        for (fragment_index, _locations) in fragments_by_index.iter().enumerate() {
+            // Try to select best replica for this fragment
+            if let Some((disk_uuid, frag_idx)) = ReplicaSelector::select_replica(extent, disks, strategy) {
+                if frag_idx == fragment_index {
+                    // Found a good replica for this fragment index
+                    if let Some(disk) = disks.iter().find(|d| d.uuid == disk_uuid) {
+                        match disk.read_fragment(&extent.uuid, fragment_index) {
+                            Ok(data) => {
+                                fragments[fragment_index] = Some(data);
+                                continue;
+                            }
+                            Err(e) => {
+                                self.metrics.record_disk_error();
+                                log::warn!(
+                                    "Failed to read fragment {} of extent {} from disk {}: {}",
+                                    fragment_index,
+                                    extent.uuid,
+                                    disk_uuid,
+                                    e
+                                );
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
-                    self.metrics.record_disk_error();
-                    log::warn!(
-                        "Failed to read fragment {} of extent {} from disk {}: {}",
-                        location.fragment_index,
-                        extent.uuid,
-                        location.disk_uuid,
-                        e
-                    );
+            }
+            
+            // Fallback: read from any available replica for this fragment
+            for location in &extent.fragment_locations {
+                if location.fragment_index == fragment_index {
+                    if let Some(disk) = disks.iter().find(|d| d.uuid == location.disk_uuid) {
+                        match disk.read_fragment(&extent.uuid, location.fragment_index) {
+                            Ok(data) => {
+                                fragments[fragment_index] = Some(data);
+                                break;
+                            }
+                            Err(e) => {
+                                self.metrics.record_disk_error();
+                                log::warn!(
+                                    "Failed to read fragment {} of extent {} from disk {}: {}",
+                                    location.fragment_index,
+                                    extent.uuid,
+                                    location.disk_uuid,
+                                    e
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }

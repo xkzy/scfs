@@ -12,6 +12,7 @@ mod metrics;
 mod phase_1_3_tests;
 mod placement;
 mod redundancy;
+pub mod scheduler;
 mod scrubber;
 mod storage;
 

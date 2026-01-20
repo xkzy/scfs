@@ -244,7 +244,7 @@ impl StorageEngine {
         Ok(result)
     }
     
-    /// Read fragments of an extent
+    /// Read fragments of an extent with smart replica selection
     fn read_fragments(&self, extent: &Extent, disks: &[Disk]) -> Result<Vec<Option<Vec<u8>>>> {
         let mut fragments = vec![None; extent.redundancy.fragment_count()];
         

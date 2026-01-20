@@ -16,6 +16,8 @@ mod redundancy;
 pub mod scheduler;
 mod scrubber;
 mod storage;
+mod write_optimizer;
+mod adaptive;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;

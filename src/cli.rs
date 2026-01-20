@@ -165,6 +165,13 @@ pub enum Commands {
         #[arg(short, long)]
         pool: PathBuf,
     },
+
+    /// Scrub all extents for corruption and issues
+    Scrub {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
     
     /// Mount the filesystem
     Mount {

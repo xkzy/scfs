@@ -11,6 +11,7 @@ mod metadata_tx;
 mod phase_1_3_tests;
 mod placement;
 mod redundancy;
+mod scrubber;
 mod storage;
 
 use anyhow::{anyhow, Context, Result};
@@ -52,6 +53,7 @@ fn main() -> Result<()> {
         }
         Commands::OrphanStats { pool } => cmd_orphan_stats(&pool),
         Commands::ProbeDisks { pool } => cmd_probe_disks(&pool),
+        Commands::Scrub { pool } => cmd_scrub(&pool),
         Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint),
     }
 }
@@ -86,6 +88,56 @@ fn cmd_probe_disks(pool_dir: &Path) -> Result<()> {
                 log::warn!("Failed to load disk metadata at {:?}: {}", path, e);
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_scrub(pool_dir: &Path) -> Result<()> {
+    println!("Scrubbing all extents in pool {:?}", pool_dir);
+    println!();
+
+    let pool = DiskPool::load(pool_dir)?;
+    let disks = pool.load_disks()?;
+    let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
+
+    let scrubber = scrubber::Scrubber::new(pool_dir.to_path_buf());
+    let results = scrubber.scrub_all(&metadata, &disks)?;
+
+    let stats = scrubber::Scrubber::stats(&results);
+
+    println!("Scrub Results:");
+    println!();
+    println!("  Healthy:       {}", stats.healthy);
+    println!("  Degraded:      {}", stats.degraded);
+    println!("  Repaired:      {}", stats.repaired);
+    println!("  Unrecoverable: {}", stats.unrecoverable);
+    println!();
+
+    if stats.total_issues > 0 {
+        println!("Issues detected: {}", stats.total_issues);
+        println!();
+
+        for result in &results {
+            if !result.issues.is_empty() {
+                println!("  Extent {}: {:?}", result.extent_uuid, result.status);
+                for issue in &result.issues {
+                    println!("    - {}", issue);
+                }
+            }
+        }
+    }
+
+    if stats.unrecoverable > 0 {
+        println!();
+        println!("⚠ WARNING: {} unrecoverable extents found!", stats.unrecoverable);
+        println!("Data may be lost if no backups are available.");
+    } else if stats.degraded > 0 {
+        println!();
+        println!("✓ {} extents can be repaired via rebuild", stats.degraded);
+    } else if stats.healthy > 0 {
+        println!();
+        println!("✓ All extents are healthy and verified");
     }
 
     Ok(())

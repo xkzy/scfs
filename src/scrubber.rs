@@ -119,7 +119,56 @@ impl Scrubber {
         Ok(result)
     }
 
-    /// Perform full scrub of all extents
+    /// Attempt automatic repair of a degraded extent
+    /// Conservative: only repairs when safe (min_fragments available)
+    /// Idempotent: safe to call multiple times
+    pub fn repair_extent(
+        &self,
+        extent: &mut Extent,
+        metadata: &MetadataManager,
+        disks: &mut [Disk],
+        placement: &PlacementEngine,
+        fragments: &[Option<Vec<u8>>],
+    ) -> Result<ScrubResult> {
+        let mut result = self.verify_extent(extent, metadata, disks)?;
+
+        // Only attempt repair if degraded (readable but incomplete)
+        if result.status != ScrubStatus::Degraded {
+            return Ok(result);
+        }
+
+        // Check: Do we have minimum fragments to decode?
+        let readable_count = fragments.iter().filter(|f| f.is_some()).count();
+        if readable_count < extent.redundancy.min_fragments() {
+            result.issues.push("Insufficient fragments to repair (cannot decode)".to_string());
+            result.status = ScrubStatus::Unrecoverable;
+            return Ok(result);
+        }
+
+        result.repairs_attempted += 1;
+
+        // Attempt rebuild
+        match placement.rebuild_extent(extent, disks, fragments) {
+            Ok(()) => {
+                // Persist the repaired extent
+                metadata.save_extent(extent)?;
+                result.repairs_successful += 1;
+                result.status = ScrubStatus::Repaired;
+                log::info!(
+                    "Successfully repaired extent {} (now {} fragments)",
+                    extent.uuid,
+                    extent.fragment_locations.len()
+                );
+            }
+            Err(e) => {
+                result.issues.push(format!("Repair attempt failed: {}", e));
+                log::warn!("Failed to repair extent {}: {}", extent.uuid, e);
+            }
+        }
+
+        Ok(result)
+    }
+
     pub fn scrub_all(
         &self,
         metadata: &MetadataManager,

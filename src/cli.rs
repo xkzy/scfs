@@ -171,6 +171,17 @@ pub enum Commands {
         /// Pool directory
         #[arg(short, long)]
         pool: PathBuf,
+
+        /// Attempt to repair detected issues
+        #[arg(short, long, default_value = "false")]
+        repair: bool,
+    },
+
+    /// Show filesystem status and health
+    Status {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
     },
     
     /// Mount the filesystem

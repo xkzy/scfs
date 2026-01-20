@@ -53,7 +53,8 @@ fn main() -> Result<()> {
         }
         Commands::OrphanStats { pool } => cmd_orphan_stats(&pool),
         Commands::ProbeDisks { pool } => cmd_probe_disks(&pool),
-        Commands::Scrub { pool } => cmd_scrub(&pool),
+        Commands::Scrub { pool, repair } => cmd_scrub(&pool, repair),
+        Commands::Status { pool } => cmd_status(&pool),
         Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint),
     }
 }
@@ -93,16 +94,50 @@ fn cmd_probe_disks(pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_scrub(pool_dir: &Path) -> Result<()> {
+fn cmd_scrub(pool_dir: &Path, repair: bool) -> Result<()> {
     println!("Scrubbing all extents in pool {:?}", pool_dir);
+    if repair {
+        println!("Repair mode: ENABLED - will attempt to fix detected issues");
+    }
     println!();
 
     let pool = DiskPool::load(pool_dir)?;
-    let disks = pool.load_disks()?;
+    let mut disks = pool.load_disks()?;
     let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
 
     let scrubber = scrubber::Scrubber::new(pool_dir.to_path_buf());
-    let results = scrubber.scrub_all(&metadata, &disks)?;
+    let placement = placement::PlacementEngine;
+
+    let mut results = Vec::new();
+    let extents = metadata.list_all_extents()?;
+
+    for mut extent in extents {
+        let fragments_result = {
+            let mut fragments = vec![None; extent.redundancy.fragment_count()];
+            for location in &extent.fragment_locations {
+                if let Some(disk) = disks.iter().find(|d| d.uuid == location.disk_uuid) {
+                    if let Ok(data) = disk.read_fragment(&extent.uuid, location.fragment_index) {
+                        fragments[location.fragment_index] = Some(data);
+                    }
+                }
+            }
+            fragments
+        };
+
+        let result = if repair {
+            match scrubber.repair_extent(&mut extent, &metadata, &mut disks, &placement, &fragments_result) {
+                Ok(r) => r,
+                Err(e) => {
+                    log::error!("Error repairing extent {}: {}", extent.uuid, e);
+                    scrubber.verify_extent(&extent, &metadata, &disks)?
+                }
+            }
+        } else {
+            scrubber.verify_extent(&extent, &metadata, &disks)?
+        };
+
+        results.push(result);
+    }
 
     let stats = scrubber::Scrubber::stats(&results);
 
@@ -116,6 +151,9 @@ fn cmd_scrub(pool_dir: &Path) -> Result<()> {
 
     if stats.total_issues > 0 {
         println!("Issues detected: {}", stats.total_issues);
+        if repair {
+            println!("Repairs attempted: {}", stats.total_repairs);
+        }
         println!();
 
         for result in &results {
@@ -134,10 +172,82 @@ fn cmd_scrub(pool_dir: &Path) -> Result<()> {
         println!("Data may be lost if no backups are available.");
     } else if stats.degraded > 0 {
         println!();
-        println!("✓ {} extents can be repaired via rebuild", stats.degraded);
+        if repair {
+            println!("✓ Attempted repair of {} degraded extents", stats.degraded);
+        } else {
+            println!("✓ {} extents can be repaired via rebuild", stats.degraded);
+            println!("  Use `scrub --pool {} --repair` to attempt automatic repair", pool_dir.display());
+        }
     } else if stats.healthy > 0 {
         println!();
         println!("✓ All extents are healthy and verified");
+    }
+
+    Ok(())
+}
+
+fn cmd_status(pool_dir: &Path) -> Result<()> {
+    println!("Filesystem Status: {}", pool_dir.display());
+    println!();
+
+    // Load pool
+    let pool = DiskPool::load(pool_dir)?;
+    let disks = pool.load_disks()?;
+
+    println!("Disks: {}", disks.len());
+    let mut healthy = 0;
+    let mut degraded = 0;
+    let mut failed = 0;
+    for disk in &disks {
+        match disk.health {
+            disk::DiskHealth::Healthy => healthy += 1,
+            disk::DiskHealth::Failed => failed += 1,
+            _ => degraded += 1,
+        }
+        println!(
+            "  {} ({:?}) - {} MB used / {} MB total",
+            disk.uuid,
+            disk.health,
+            disk.used_bytes / 1024 / 1024,
+            disk.capacity_bytes / 1024 / 1024
+        );
+    }
+
+    println!();
+    println!("Disk Summary: {} healthy, {} degraded/suspect, {} failed", healthy, degraded, failed);
+
+    // Load metadata
+    let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
+    let extents = metadata.list_all_extents()?;
+
+    let mut complete = 0;
+    let mut readable = 0;
+    let mut unreadable = 0;
+    for extent in &extents {
+        if extent.is_complete() {
+            complete += 1;
+        } else if extent.is_readable() {
+            readable += 1;
+        } else {
+            unreadable += 1;
+        }
+    }
+
+    println!();
+    println!("Extents: {} total", extents.len());
+    println!("  {} complete", complete);
+    println!("  {} degraded (readable)", readable);
+    println!("  {} unreadable", unreadable);
+
+    if unreadable > 0 {
+        println!();
+        println!("⚠ WARNING: {} unreadable extents - data loss risk!", unreadable);
+    } else if readable > 0 {
+        println!();
+        println!("⚠ NOTICE: {} degraded extents - rebuild recommended", readable);
+    } else {
+        println!();
+        println!("✓ All extents healthy");
     }
 
     Ok(())

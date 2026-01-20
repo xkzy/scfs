@@ -48,35 +48,36 @@ fn main() -> Result<()> {
         .init();
     
     let cli = Cli::parse();
+    let json_output = cli.json;
     
     match cli.command {
-        Commands::Init { pool } => cmd_init(&pool),
-        Commands::AddDisk { pool, disk } => cmd_add_disk(&pool, &disk),
-        Commands::RemoveDisk { pool, disk } => cmd_remove_disk(&pool, &disk),
-        Commands::ListDisks { pool } => cmd_list_disks(&pool),
-        Commands::ListExtents { pool } => cmd_list_extents(&pool),
-        Commands::ShowRedundancy { pool } => cmd_show_redundancy(&pool),
-        Commands::FailDisk { pool, disk } => cmd_fail_disk(&pool, &disk),
-        Commands::SetDiskHealth { pool, disk, health } => cmd_set_disk_health(&pool, &disk, &health),
-        Commands::ChangePolicy { pool, policy } => cmd_change_policy(&pool, &policy),
-        Commands::PolicyStatus { pool } => cmd_policy_status(&pool),
-        Commands::ListHot { pool } => cmd_list_hot(&pool),
-        Commands::ListCold { pool } => cmd_list_cold(&pool),
-        Commands::ExtentStats { pool, extent } => cmd_extent_stats(&pool, &extent),
-        Commands::DetectOrphans { pool } => cmd_detect_orphans(&pool),
+        Commands::Init { pool } => cmd_init(&pool, json_output),
+        Commands::AddDisk { pool, disk } => cmd_add_disk(&pool, &disk, json_output),
+        Commands::RemoveDisk { pool, disk } => cmd_remove_disk(&pool, &disk, json_output),
+        Commands::ListDisks { pool } => cmd_list_disks(&pool, json_output),
+        Commands::ListExtents { pool } => cmd_list_extents(&pool, json_output),
+        Commands::ShowRedundancy { pool } => cmd_show_redundancy(&pool, json_output),
+        Commands::FailDisk { pool, disk } => cmd_fail_disk(&pool, &disk, json_output),
+        Commands::SetDiskHealth { pool, disk, health } => cmd_set_disk_health(&pool, &disk, &health, json_output),
+        Commands::ChangePolicy { pool, policy } => cmd_change_policy(&pool, &policy, json_output),
+        Commands::PolicyStatus { pool } => cmd_policy_status(&pool, json_output),
+        Commands::ListHot { pool } => cmd_list_hot(&pool, json_output),
+        Commands::ListCold { pool } => cmd_list_cold(&pool, json_output),
+        Commands::ExtentStats { pool, extent } => cmd_extent_stats(&pool, &extent, json_output),
+        Commands::DetectOrphans { pool } => cmd_detect_orphans(&pool, json_output),
         Commands::CleanupOrphans { pool, min_age_hours, dry_run } => {
-            cmd_cleanup_orphans(&pool, min_age_hours, dry_run)
+            cmd_cleanup_orphans(&pool, min_age_hours, dry_run, json_output)
         }
-        Commands::OrphanStats { pool } => cmd_orphan_stats(&pool),
-        Commands::ProbeDisks { pool } => cmd_probe_disks(&pool),
-        Commands::Scrub { pool, repair } => cmd_scrub(&pool, repair),
-        Commands::Status { pool } => cmd_status(&pool),
-        Commands::Metrics { pool } => cmd_metrics(&pool),
-        Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint),
+        Commands::OrphanStats { pool } => cmd_orphan_stats(&pool, json_output),
+        Commands::ProbeDisks { pool } => cmd_probe_disks(&pool, json_output),
+        Commands::Scrub { pool, repair } => cmd_scrub(&pool, repair, json_output),
+        Commands::Status { pool } => cmd_status(&pool, json_output),
+        Commands::Metrics { pool } => cmd_metrics(&pool, json_output),
+        Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint, json_output),
     }
 }
 
-fn cmd_probe_disks(pool_dir: &Path) -> Result<()> {
+fn cmd_probe_disks(pool_dir: &Path, _json_output: bool) -> Result<()> {
     println!("Probing disks in pool {:?}", pool_dir);
 
     let pool = DiskPool::load(pool_dir)?;
@@ -111,7 +112,7 @@ fn cmd_probe_disks(pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_scrub(pool_dir: &Path, repair: bool) -> Result<()> {
+fn cmd_scrub(pool_dir: &Path, repair: bool, _json_output: bool) -> Result<()> {
     println!("Scrubbing all extents in pool {:?}", pool_dir);
     if repair {
         println!("Repair mode: ENABLED - will attempt to fix detected issues");
@@ -203,15 +204,11 @@ fn cmd_scrub(pool_dir: &Path, repair: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_status(pool_dir: &Path) -> Result<()> {
-    println!("Filesystem Status: {}", pool_dir.display());
-    println!();
-
+fn cmd_status(pool_dir: &Path, json_output: bool) -> Result<()> {
     // Load pool
     let pool = DiskPool::load(pool_dir)?;
     let disks = pool.load_disks()?;
 
-    println!("Disks: {}", disks.len());
     let mut healthy = 0;
     let mut degraded = 0;
     let mut failed = 0;
@@ -221,17 +218,7 @@ fn cmd_status(pool_dir: &Path) -> Result<()> {
             disk::DiskHealth::Failed => failed += 1,
             _ => degraded += 1,
         }
-        println!(
-            "  {} ({:?}) - {} MB used / {} MB total",
-            disk.uuid,
-            disk.health,
-            disk.used_bytes / 1024 / 1024,
-            disk.capacity_bytes / 1024 / 1024
-        );
     }
-
-    println!();
-    println!("Disk Summary: {} healthy, {} degraded/suspect, {} failed", healthy, degraded, failed);
 
     // Load metadata
     let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
@@ -250,27 +237,61 @@ fn cmd_status(pool_dir: &Path) -> Result<()> {
         }
     }
 
-    println!();
-    println!("Extents: {} total", extents.len());
-    println!("  {} complete", complete);
-    println!("  {} degraded (readable)", readable);
-    println!("  {} unreadable", unreadable);
-
-    if unreadable > 0 {
-        println!();
-        println!("⚠ WARNING: {} unreadable extents - data loss risk!", unreadable);
-    } else if readable > 0 {
-        println!();
-        println!("⚠ NOTICE: {} degraded extents - rebuild recommended", readable);
+    if json_output {
+        let status_json = serde_json::json!({
+            "status": "ok",
+            "filesystem": pool_dir.display().to_string(),
+            "disks": {
+                "total": disks.len(),
+                "healthy": healthy,
+                "degraded": degraded,
+                "failed": failed
+            },
+            "extents": {
+                "total": extents.len(),
+                "complete": complete,
+                "readable": readable,
+                "unreadable": unreadable
+            },
+            "health": if unreadable > 0 { "critical" } else if readable > 0 { "degraded" } else { "healthy" }
+        });
+        println!("{}", serde_json::to_string_pretty(&status_json)?);
     } else {
+        println!("Filesystem Status: {}", pool_dir.display());
         println!();
-        println!("✓ All extents healthy");
+        println!("Disks: {}", disks.len());
+        for disk in &disks {
+            println!(
+                "  {} ({:?}) - {} MB used / {} MB total",
+                disk.uuid,
+                disk.health,
+                disk.used_bytes / 1024 / 1024,
+                disk.capacity_bytes / 1024 / 1024
+            );
+        }
+        println!();
+        println!("Disk Summary: {} healthy, {} degraded/suspect, {} failed", healthy, degraded, failed);
+        println!();
+        println!("Extents: {} total", extents.len());
+        println!("  {} complete", complete);
+        println!("  {} degraded (readable)", readable);
+        println!("  {} unreadable", unreadable);
+        if unreadable > 0 {
+            println!();
+            println!("⚠ WARNING: {} unreadable extents - data loss risk!", unreadable);
+        } else if readable > 0 {
+            println!();
+            println!("⚠ NOTICE: {} degraded extents - rebuild recommended", readable);
+        } else {
+            println!();
+            println!("✓ All extents healthy");
+        }
     }
 
     Ok(())
 }
 
-fn cmd_init(pool_dir: &Path) -> Result<()> {
+fn cmd_init(pool_dir: &Path, _json_output: bool) -> Result<()> {
     println!("Initializing storage pool at {:?}", pool_dir);
     
     fs::create_dir_all(pool_dir).context("Failed to create pool directory")?;
@@ -285,7 +306,7 @@ fn cmd_init(pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_add_disk(pool_dir: &Path, disk_path: &Path) -> Result<()> {
+fn cmd_add_disk(pool_dir: &Path, disk_path: &Path, _json_output: bool) -> Result<()> {
     println!("Adding disk {:?} to pool {:?}", disk_path, pool_dir);
     
     // Create disk directory if needed
@@ -305,7 +326,7 @@ fn cmd_add_disk(pool_dir: &Path, disk_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_remove_disk(pool_dir: &Path, disk_path: &Path) -> Result<()> {
+fn cmd_remove_disk(pool_dir: &Path, disk_path: &Path, _json_output: bool) -> Result<()> {
     println!("Removing disk {:?} from pool {:?}", disk_path, pool_dir);
     
     // Mark disk as draining
@@ -325,7 +346,7 @@ fn cmd_remove_disk(pool_dir: &Path, disk_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_list_disks(pool_dir: &Path) -> Result<()> {
+fn cmd_list_disks(pool_dir: &Path, _json_output: bool) -> Result<()> {
     let pool = DiskPool::load(pool_dir)?;
     let disks = pool.load_disks()?;
     
@@ -346,7 +367,7 @@ fn cmd_list_disks(pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_list_extents(pool_dir: &Path) -> Result<()> {
+fn cmd_list_extents(pool_dir: &Path, _json_output: bool) -> Result<()> {
     let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
     let extents = metadata.list_all_extents()?;
     
@@ -366,7 +387,7 @@ fn cmd_list_extents(pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_show_redundancy(pool_dir: &Path) -> Result<()> {
+fn cmd_show_redundancy(pool_dir: &Path, _json_output: bool) -> Result<()> {
     let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
     let extents = metadata.list_all_extents()?;
     
@@ -412,7 +433,7 @@ fn cmd_show_redundancy(pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_fail_disk(pool_dir: &Path, disk_path: &Path) -> Result<()> {
+fn cmd_fail_disk(pool_dir: &Path, disk_path: &Path, _json_output: bool) -> Result<()> {
     println!("Simulating failure of disk {:?}", disk_path);
     
     let mut disk = Disk::load(disk_path)?;
@@ -426,7 +447,7 @@ fn cmd_fail_disk(pool_dir: &Path, disk_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_set_disk_health(_pool_dir: &Path, disk_path: &Path, health: &str) -> Result<()> {
+fn cmd_set_disk_health(_pool_dir: &Path, disk_path: &Path, health: &str, _json_output: bool) -> Result<()> {
     let mut disk = Disk::load(disk_path)?;
     let old_health = disk.health;
 
@@ -454,7 +475,7 @@ fn cmd_set_disk_health(_pool_dir: &Path, disk_path: &Path, health: &str) -> Resu
     Ok(())
 }
 
-fn cmd_change_policy(pool_dir: &Path, policy_str: &str) -> Result<()> {
+fn cmd_change_policy(pool_dir: &Path, policy_str: &str, _json_output: bool) -> Result<()> {
     println!("Preparing to change redundancy policy...");
     
     // Parse policy string
@@ -496,7 +517,7 @@ fn cmd_change_policy(pool_dir: &Path, policy_str: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_policy_status(pool_dir: &Path) -> Result<()> {
+fn cmd_policy_status(pool_dir: &Path, _json_output: bool) -> Result<()> {
     let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
     let all_extents = metadata.list_all_extents()?;
     
@@ -535,7 +556,7 @@ fn cmd_policy_status(pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_mount(pool_dir: &Path, mountpoint: &Path) -> Result<()> {
+fn cmd_mount(pool_dir: &Path, mountpoint: &Path, _json_output: bool) -> Result<()> {
     println!("Mounting filesystem at {:?}", mountpoint);
     println!("Pool: {:?}", pool_dir);
     
@@ -577,7 +598,7 @@ fn cmd_mount(pool_dir: &Path, mountpoint: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_list_hot(_pool_dir: &Path) -> Result<()> {
+fn cmd_list_hot(_pool_dir: &Path, _json_output: bool) -> Result<()> {
     println!("Hot extents:");
     println!("(Extents accessed more than 100 times/day or within last hour)");
     println!();
@@ -588,18 +609,55 @@ fn cmd_list_hot(_pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_metrics(_pool_dir: &Path) -> Result<()> {
+fn cmd_metrics(_pool_dir: &Path, json_output: bool) -> Result<()> {
     // Create default metrics snapshot for demo
     let snapshot = metrics::Metrics::new().snapshot();
-    println!("{}", snapshot);
-    println!();
-    println!("Note: Metrics are collected during filesystem operation.");
-    println!("These are default/zero values; actual metrics require an active mounted instance.");
+    
+    if json_output {
+        let metrics_json = serde_json::json!({
+            "disk": {
+                "reads": snapshot.disk_reads,
+                "read_bytes": snapshot.disk_read_bytes,
+                "writes": snapshot.disk_writes,
+                "write_bytes": snapshot.disk_write_bytes,
+                "errors": snapshot.disk_errors
+            },
+            "extents": {
+                "healthy": snapshot.extents_healthy,
+                "degraded": snapshot.extents_degraded,
+                "unrecoverable": snapshot.extents_unrecoverable
+            },
+            "rebuild": {
+                "attempted": snapshot.rebuilds_attempted,
+                "successful": snapshot.rebuilds_successful,
+                "failed": snapshot.rebuilds_failed,
+                "bytes_written": snapshot.rebuild_bytes_written
+            },
+            "scrub": {
+                "completed": snapshot.scrubs_completed,
+                "issues_found": snapshot.scrub_issues_found,
+                "repairs_attempted": snapshot.scrub_repairs_attempted,
+                "repairs_successful": snapshot.scrub_repairs_successful
+            },
+            "cache": {
+                "hits": snapshot.cache_hits,
+                "misses": snapshot.cache_misses,
+                "hit_rate": snapshot.cache_hits as f64 / ((snapshot.cache_hits + snapshot.cache_misses) as f64 + 0.001)
+            },
+            "note": "Metrics are collected during filesystem operation. These are default/zero values; actual metrics require an active mounted instance."
+        });
+        println!("{}", serde_json::to_string_pretty(&metrics_json)?);
+    } else {
+        println!("{}", snapshot);
+        println!();
+        println!("Note: Metrics are collected during filesystem operation.");
+        println!("These are default/zero values; actual metrics require an active mounted instance.");
+    }
     
     Ok(())
 }
 
-fn cmd_list_cold(_pool_dir: &Path) -> Result<()> {
+fn cmd_list_cold(_pool_dir: &Path, _json_output: bool) -> Result<()> {
     println!("Cold extents:");
     println!("(Extents accessed less than 10 times/day and not accessed in 24+ hours)");
     println!();
@@ -610,7 +668,7 @@ fn cmd_list_cold(_pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_extent_stats(_pool_dir: &Path, extent_str: &str) -> Result<()> {
+fn cmd_extent_stats(_pool_dir: &Path, extent_str: &str, _json_output: bool) -> Result<()> {
     println!("Extent statistics for: {}", extent_str);
     println!();
     println!("Classification system:");
@@ -622,7 +680,7 @@ fn cmd_extent_stats(_pool_dir: &Path, extent_str: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_detect_orphans(pool_dir: &Path) -> Result<()> {
+fn cmd_detect_orphans(pool_dir: &Path, _json_output: bool) -> Result<()> {
     println!("Scanning for orphaned fragments...");
     println!();
     
@@ -673,7 +731,7 @@ fn cmd_detect_orphans(pool_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_cleanup_orphans(pool_dir: &Path, min_age_hours: u64, dry_run: bool) -> Result<()> {
+fn cmd_cleanup_orphans(pool_dir: &Path, min_age_hours: u64, dry_run: bool, _json_output: bool) -> Result<()> {
     let min_age_seconds = min_age_hours * 3600;
     
     if dry_run {
@@ -723,7 +781,7 @@ fn cmd_cleanup_orphans(pool_dir: &Path, min_age_hours: u64, dry_run: bool) -> Re
     Ok(())
 }
 
-fn cmd_orphan_stats(pool_dir: &Path) -> Result<()> {
+fn cmd_orphan_stats(pool_dir: &Path, _json_output: bool) -> Result<()> {
     println!("Orphan fragment statistics...");
     println!();
     

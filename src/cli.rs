@@ -5,6 +5,10 @@ use std::path::PathBuf;
 #[command(name = "dynamicfs")]
 #[command(about = "Dynamic Object-Based Filesystem", long_about = None)]
 pub struct Cli {
+    /// Output results in JSON format
+    #[arg(long, global = true)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }

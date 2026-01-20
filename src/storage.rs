@@ -6,12 +6,14 @@ use crate::extent::{split_into_extents, Extent, RedundancyPolicy, DEFAULT_EXTENT
 use crate::metadata::{ExtentMap, Inode, MetadataManager};
 use crate::placement::PlacementEngine;
 use crate::redundancy;
+use crate::metrics::Metrics;
 
 /// Storage engine handling read/write operations
 pub struct StorageEngine {
     metadata: Arc<RwLock<MetadataManager>>,
     disks: Arc<RwLock<Vec<Disk>>>,
     placement: PlacementEngine,
+    metrics: Arc<Metrics>,
 }
 
 impl StorageEngine {
@@ -20,7 +22,21 @@ impl StorageEngine {
             metadata: Arc::new(RwLock::new(metadata)),
             disks: Arc::new(RwLock::new(disks)),
             placement: PlacementEngine,
+            metrics: Arc::new(Metrics::new()),
         }
+    }
+    
+    pub fn with_metrics(metadata: MetadataManager, disks: Vec<Disk>, metrics: Arc<Metrics>) -> Self {
+        StorageEngine {
+            metadata: Arc::new(RwLock::new(metadata)),
+            disks: Arc::new(RwLock::new(disks)),
+            placement: PlacementEngine,
+            metrics,
+        }
+    }
+    
+    pub fn metrics(&self) -> Arc<Metrics> {
+        self.metrics.clone()
     }
 
     /// Perform mount-time rebuild: scan extents and rebuild missing fragments where possible
@@ -54,14 +70,17 @@ impl StorageEngine {
                 metadata_w.save_extent(&extent)?;
 
                 // perform rebuild
+                self.metrics.record_rebuild_start();
                 let mut disks_mut = self.disks.write().unwrap();
                 if let Err(e) = self.placement.rebuild_extent(&mut extent, &mut disks_mut, &fragments) {
+                    self.metrics.record_rebuild_failure();
                     log::error!("Failed to rebuild extent {:?}: {:?}", extent_uuid, e);
                     extent.rebuild_in_progress = false;
                     metadata_w.save_extent(&extent)?;
                     continue;
                 }
 
+                self.metrics.record_rebuild_success(extent.size as u64);
                 extent.rebuild_in_progress = false;
                 extent.rebuild_progress = Some(extent.fragment_locations.len());
                 metadata_w.save_extent(&extent)?;
@@ -155,6 +174,9 @@ impl StorageEngine {
             return Err(err);
         }
         
+        // Record metrics for write operation
+        self.metrics.record_disk_write(data.len() as u64);
+        
         log::info!("Wrote {} bytes to inode {} across {} extents", 
                    data.len(), ino, written_extents.len());
         
@@ -228,8 +250,17 @@ impl StorageEngine {
                     extent.redundancy.fragment_count()
                 );
                 
+                self.metrics.record_rebuild_start();
                 let mut disks_mut = self.disks.write().unwrap();
-                self.placement.rebuild_extent(&mut extent, &mut disks_mut, &fragments)?;
+                match self.placement.rebuild_extent(&mut extent, &mut disks_mut, &fragments) {
+                    Ok(_) => {
+                        self.metrics.record_rebuild_success(extent.size as u64);
+                    }
+                    Err(e) => {
+                        self.metrics.record_rebuild_failure();
+                        return Err(e);
+                    }
+                }
                 metadata.save_extent(&extent)?;
             }
             
@@ -239,6 +270,9 @@ impl StorageEngine {
             // Append to result (only the actual data, not padding)
             result.extend_from_slice(&extent_data[..extent.size]);
         }
+        
+        // Record metrics for read operation
+        self.metrics.record_disk_read(result.len() as u64);
         
         log::debug!("Read {} bytes from inode {}", result.len(), ino);
         Ok(result)
@@ -261,6 +295,7 @@ impl StorageEngine {
                     fragments[location.fragment_index] = Some(data);
                 }
                 Err(e) => {
+                    self.metrics.record_disk_error();
                     log::warn!(
                         "Failed to read fragment {} of extent {} from disk {}: {}",
                         location.fragment_index,

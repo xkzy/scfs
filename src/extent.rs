@@ -98,6 +98,9 @@ pub struct Extent {
     // Rebuild progress tracking
     pub rebuild_in_progress: bool,
     pub rebuild_progress: Option<usize>, // number of fragments rebuilt so far
+    
+    // Phase 15: Versioning for lock-free reads
+    pub generation: u64, // Monotonic generation number for versioned reads
 }
 
 /// Location of a fragment on a disk
@@ -136,6 +139,7 @@ impl Extent {
             },
             rebuild_in_progress: false,
             rebuild_progress: None,
+            generation: 0, // Start at generation 0
         }
     }
     
@@ -243,7 +247,18 @@ impl Extent {
     pub fn record_write(&mut self) {
         self.access_stats.write_count += 1;
         self.access_stats.last_write = chrono::Utc::now().timestamp();
+        self.generation += 1; // Increment generation on writes
         self.reclassify();
+    }
+    
+    /// Increment generation number (for atomic updates)
+    pub fn increment_generation(&mut self) {
+        self.generation += 1;
+    }
+    
+    /// Get current generation (for lock-free reads)
+    pub fn current_generation(&self) -> u64 {
+        self.generation
     }
     
     /// Get access frequency (operations per day)

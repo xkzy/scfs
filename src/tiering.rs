@@ -337,6 +337,7 @@ mod tests {
             },
             rebuild_in_progress: false,
             rebuild_progress: None,
+            generation: 0,
         }
     }
 

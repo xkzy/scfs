@@ -1,4 +1,5 @@
 mod cli;
+mod concurrency;
 mod config;
 mod crash_sim;
 mod diagnostics;
@@ -8,6 +9,7 @@ mod file_locks;
 mod fuse_impl;
 mod gc;
 mod hmm_classifier;
+mod io_scheduler;
 mod json_output;
 mod logging;
 mod metadata;
@@ -16,6 +18,8 @@ mod metrics;
 mod monitoring;
 #[cfg(test)]
 mod phase_1_3_tests;
+#[cfg(test)]
+mod phase_15_tests;
 #[cfg(test)]
 mod phase_16_tests;
 mod perf;

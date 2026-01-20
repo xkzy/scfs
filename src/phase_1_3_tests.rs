@@ -135,6 +135,7 @@ fn test_orphan_detection() -> Result<()> {
         last_policy_change: None,
         rebuild_in_progress: false,
         rebuild_progress: None,
+        generation: 0,
     };
     metadata.save_extent(&extent1)?;
     

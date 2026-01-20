@@ -18,6 +18,7 @@ mod scrubber;
 mod storage;
 mod write_optimizer;
 mod adaptive;
+mod snapshots;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;

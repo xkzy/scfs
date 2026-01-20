@@ -222,7 +222,9 @@ impl IoScheduler {
             request.priority
         );
         
-        // Simulate I/O latency
+        // TODO: Remove this simulation delay in production builds
+        // This is only for testing to simulate I/O latency
+        #[cfg(test)]
         thread::sleep(Duration::from_micros(100));
         
         IoResult {

@@ -307,6 +307,9 @@ impl GroupCommitCoordinator {
         
         let count = operations.len();
         
+        // Use a consistent timestamp for all operations in this batch
+        let batch_timestamp = chrono::Utc::now().timestamp();
+        
         // Execute all operations
         for op in operations {
             match op {
@@ -316,7 +319,7 @@ impl GroupCommitCoordinator {
                 MetadataOperation::UpdateInode(ino, size) => {
                     let mut inode = metadata.load_inode(ino)?;
                     inode.size = size;
-                    inode.mtime = chrono::Utc::now().timestamp();
+                    inode.mtime = batch_timestamp; // Use consistent timestamp
                     metadata.save_inode(&inode)?;
                 }
                 MetadataOperation::SaveExtentMap(ino, extent_uuids) => {

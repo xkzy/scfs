@@ -1032,16 +1032,14 @@ fn cmd_scrub_daemon(action: ScrubDaemonAction, json_output: bool) -> Result<()> 
     match action {
         ScrubDaemonAction::Start { pool, intensity, dry_run } => {
             let intensity_level = parse_intensity(&intensity)?;
-            let schedule = if dry_run {
-                ScrubSchedule {
-                    enabled: true,
-                    interval_hours: 1,
-                    intensity: intensity_level,
-                    dry_run: true,
-                    auto_repair: false,
-                }
-            } else {
-                ScrubSchedule::continuous_medium()
+            
+            // Build schedule based on user input
+            let schedule = ScrubSchedule {
+                enabled: true,
+                interval_hours: if dry_run { 1 } else { 6 },
+                intensity: intensity_level,
+                dry_run,
+                auto_repair: !dry_run,  // Auto-repair only when not in dry-run mode
             };
             
             let daemon = ScrubDaemon::new();
@@ -1050,12 +1048,14 @@ fn cmd_scrub_daemon(action: ScrubDaemonAction, json_output: bool) -> Result<()> 
             if json_output {
                 let result = serde_json::json!({
                     "status": "started",
+                    "pool": pool.display().to_string(),
                     "intensity": format!("{:?}", intensity_level),
                     "dry_run": dry_run,
                 });
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 println!("✓ Scrub daemon started");
+                println!("  Pool:      {:?}", pool);
                 println!("  Intensity: {:?}", intensity_level);
                 println!("  Dry run:   {}", dry_run);
             }
@@ -1064,10 +1064,14 @@ fn cmd_scrub_daemon(action: ScrubDaemonAction, json_output: bool) -> Result<()> 
         
         ScrubDaemonAction::Stop { pool } => {
             if json_output {
-                let result = serde_json::json!({"status": "stopped"});
+                let result = serde_json::json!({
+                    "status": "stopped",
+                    "pool": pool.display().to_string(),
+                });
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 println!("✓ Scrub daemon stopped");
+                println!("  Pool: {:?}", pool);
             }
             Ok(())
         }
@@ -1079,6 +1083,7 @@ fn cmd_scrub_daemon(action: ScrubDaemonAction, json_output: bool) -> Result<()> 
             
             if json_output {
                 let result = serde_json::json!({
+                    "pool": pool.display().to_string(),
                     "status": format!("{:?}", progress.status),
                     "running": metrics.is_running,
                     "paused": metrics.is_paused,
@@ -1093,7 +1098,8 @@ fn cmd_scrub_daemon(action: ScrubDaemonAction, json_output: bool) -> Result<()> 
             } else {
                 println!("Scrub Daemon Status");
                 println!("==================");
-                println!("Status: {:?}", progress.status);
+                println!("Pool:    {:?}", pool);
+                println!("Status:  {:?}", progress.status);
                 println!("Running: {}", metrics.is_running);
                 println!("Paused:  {}", metrics.is_paused);
                 println!();
@@ -1225,6 +1231,7 @@ fn cmd_metrics_server(
     use std::sync::Arc;
     use monitoring::PrometheusExporter;
     
+    // Load metrics (in a real implementation, this would load from the pool)
     let metrics = Arc::new(Metrics::new());
     let exporter = PrometheusExporter::new(metrics);
     
@@ -1235,6 +1242,7 @@ fn cmd_metrics_server(
     if json_output {
         let result = serde_json::json!({
             "status": "running",
+            "pool": pool_dir.display().to_string(),
             "endpoint": format!("http://{}/metrics", addr),
             "port": port,
             "bind": bind,
@@ -1242,6 +1250,7 @@ fn cmd_metrics_server(
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         println!("✓ Prometheus metrics server started");
+        println!("  Pool:     {:?}", pool_dir);
         println!("  Endpoint: http://{}/metrics", addr);
         println!("  Listening on {}:{}", bind, port);
         println!();
@@ -1252,33 +1261,44 @@ fn cmd_metrics_server(
         match stream {
             Ok(mut stream) => {
                 let mut buffer = [0; 1024];
-                if stream.read(&mut buffer).is_ok() {
-                    let request = String::from_utf8_lossy(&buffer);
-                    
-                    if request.contains("GET /metrics") {
-                        let metrics_text = exporter.export();
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\n\r\n{}",
-                            metrics_text.len(),
-                            metrics_text
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                    } else if request.contains("GET /health") {
-                        let health = r#"{"status":"ok"}"#;
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                            health.len(),
-                            health
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                    } else {
-                        let not_found = "404 Not Found\nAvailable endpoints:\n  /metrics - Prometheus metrics\n  /health - Health check\n";
-                        let response = format!(
-                            "HTTP/1.1 404 NOT FOUND\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-                            not_found.len(),
-                            not_found
-                        );
-                        let _ = stream.write_all(response.as_bytes());
+                match stream.read(&mut buffer) {
+                    Ok(bytes_read) => {
+                        let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+                        
+                        if request.contains("GET /metrics") {
+                            let metrics_text = exporter.export();
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\n\r\n{}",
+                                metrics_text.len(),
+                                metrics_text
+                            );
+                            if let Err(e) = stream.write_all(response.as_bytes()) {
+                                log::warn!("Failed to write metrics response: {}", e);
+                            }
+                        } else if request.contains("GET /health") {
+                            let health = r#"{"status":"ok"}"#;
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                health.len(),
+                                health
+                            );
+                            if let Err(e) = stream.write_all(response.as_bytes()) {
+                                log::warn!("Failed to write health response: {}", e);
+                            }
+                        } else {
+                            let not_found = "404 Not Found\nAvailable endpoints:\n  /metrics - Prometheus metrics\n  /health - Health check\n";
+                            let response = format!(
+                                "HTTP/1.1 404 NOT FOUND\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+                                not_found.len(),
+                                not_found
+                            );
+                            if let Err(e) = stream.write_all(response.as_bytes()) {
+                                log::debug!("Failed to write 404 response: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Failed to read request: {}", e);
                     }
                 }
             }

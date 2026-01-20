@@ -34,13 +34,14 @@ use clap::Parser;
 use std::fs;
 use std::path::Path;
 
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, ScrubDaemonAction};
 use disk::{Disk, DiskPool};
 use extent::RedundancyPolicy;
 use fuse_impl::DynamicFS;
 use metadata::MetadataManager;
 use metrics::Metrics;
 use storage::StorageEngine;
+use scrub_daemon::{ScrubDaemon, ScrubSchedule, ScrubIntensity};
 
 fn main() -> Result<()> {
     env_logger::Builder::from_default_env()
@@ -71,6 +72,11 @@ fn main() -> Result<()> {
         Commands::OrphanStats { pool } => cmd_orphan_stats(&pool, json_output),
         Commands::ProbeDisks { pool } => cmd_probe_disks(&pool, json_output),
         Commands::Scrub { pool, repair } => cmd_scrub(&pool, repair, json_output),
+        Commands::ScrubDaemon { action } => cmd_scrub_daemon(action, json_output),
+        Commands::ScrubSchedule { pool, frequency, intensity, dry_run, auto_repair } => {
+            cmd_scrub_schedule(&pool, &frequency, &intensity, dry_run, auto_repair, json_output)
+        }
+        Commands::MetricsServer { pool, port, bind } => cmd_metrics_server(&pool, port, &bind, json_output),
         Commands::Status { pool } => cmd_status(&pool, json_output),
         Commands::Metrics { pool } => cmd_metrics(&pool, json_output),
         Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint, json_output),
@@ -1019,3 +1025,268 @@ fn cmd_health(pool_dir: &Path, json_output: bool) -> Result<()> {
     Ok(())
 }
 
+
+fn cmd_scrub_daemon(action: ScrubDaemonAction, json_output: bool) -> Result<()> {
+    use std::sync::Arc;
+    
+    match action {
+        ScrubDaemonAction::Start { pool, intensity, dry_run } => {
+            let intensity_level = parse_intensity(&intensity)?;
+            let schedule = if dry_run {
+                ScrubSchedule {
+                    enabled: true,
+                    interval_hours: 1,
+                    intensity: intensity_level,
+                    dry_run: true,
+                    auto_repair: false,
+                }
+            } else {
+                ScrubSchedule::continuous_medium()
+            };
+            
+            let daemon = ScrubDaemon::new();
+            daemon.start(schedule)?;
+            
+            if json_output {
+                let result = serde_json::json!({
+                    "status": "started",
+                    "intensity": format!("{:?}", intensity_level),
+                    "dry_run": dry_run,
+                });
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("✓ Scrub daemon started");
+                println!("  Intensity: {:?}", intensity_level);
+                println!("  Dry run:   {}", dry_run);
+            }
+            Ok(())
+        }
+        
+        ScrubDaemonAction::Stop { pool } => {
+            if json_output {
+                let result = serde_json::json!({"status": "stopped"});
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("✓ Scrub daemon stopped");
+            }
+            Ok(())
+        }
+        
+        ScrubDaemonAction::Status { pool } => {
+            let daemon = ScrubDaemon::new();
+            let progress = daemon.get_progress();
+            let metrics = daemon.get_metrics();
+            
+            if json_output {
+                let result = serde_json::json!({
+                    "status": format!("{:?}", progress.status),
+                    "running": metrics.is_running,
+                    "paused": metrics.is_paused,
+                    "metrics": {
+                        "extents_scanned": metrics.extents_scanned,
+                        "issues_found": metrics.issues_found,
+                        "repairs_triggered": metrics.repairs_triggered,
+                        "io_bytes": metrics.scrub_io_bytes,
+                    }
+                });
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("Scrub Daemon Status");
+                println!("==================");
+                println!("Status: {:?}", progress.status);
+                println!("Running: {}", metrics.is_running);
+                println!("Paused:  {}", metrics.is_paused);
+                println!();
+                println!("Metrics:");
+                println!("  Extents scanned:    {}", metrics.extents_scanned);
+                println!("  Issues found:       {}", metrics.issues_found);
+                println!("  Repairs triggered:  {}", metrics.repairs_triggered);
+                println!("  I/O bytes:          {}", metrics.scrub_io_bytes);
+            }
+            Ok(())
+        }
+        
+        ScrubDaemonAction::Pause { pool } => {
+            let daemon = ScrubDaemon::new();
+            daemon.pause();
+            if json_output {
+                let result = serde_json::json!({"status": "paused"});
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("✓ Scrub daemon paused");
+            }
+            Ok(())
+        }
+        
+        ScrubDaemonAction::Resume { pool } => {
+            let daemon = ScrubDaemon::new();
+            daemon.resume();
+            if json_output {
+                let result = serde_json::json!({"status": "resumed"});
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("✓ Scrub daemon resumed");
+            }
+            Ok(())
+        }
+        
+        ScrubDaemonAction::SetIntensity { pool, intensity } => {
+            let intensity_level = parse_intensity(&intensity)?;
+            let daemon = ScrubDaemon::new();
+            daemon.set_intensity(intensity_level)?;
+            if json_output {
+                let result = serde_json::json!({"intensity": format!("{:?}", intensity_level)});
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("✓ Scrub intensity set to {:?}", intensity_level);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn parse_intensity(intensity: &str) -> Result<ScrubIntensity> {
+    match intensity.to_lowercase().as_str() {
+        "low" => Ok(ScrubIntensity::Low),
+        "medium" | "med" => Ok(ScrubIntensity::Medium),
+        "high" => Ok(ScrubIntensity::High),
+        _ => Err(anyhow!("Invalid intensity: {}. Use low, medium, or high", intensity)),
+    }
+}
+
+fn cmd_scrub_schedule(
+    pool_dir: &Path,
+    frequency: &str,
+    intensity: &str,
+    dry_run: bool,
+    auto_repair: bool,
+    json_output: bool
+) -> Result<()> {
+    let intensity_level = parse_intensity(intensity)?;
+    
+    let schedule = match frequency.to_lowercase().as_str() {
+        "nightly" => ScrubSchedule {
+            enabled: true,
+            interval_hours: 24,
+            intensity: intensity_level,
+            dry_run,
+            auto_repair,
+        },
+        "continuous" => ScrubSchedule {
+            enabled: true,
+            interval_hours: 6,
+            intensity: intensity_level,
+            dry_run,
+            auto_repair,
+        },
+        "manual" => ScrubSchedule {
+            enabled: false,
+            interval_hours: 0,
+            intensity: intensity_level,
+            dry_run,
+            auto_repair,
+        },
+        _ => {
+            return Err(anyhow!("Invalid frequency: {}. Use nightly, continuous, or manual", frequency));
+        }
+    };
+    
+    if json_output {
+        let result = serde_json::json!({
+            "frequency": frequency,
+            "intensity": format!("{:?}", intensity_level),
+            "interval_hours": schedule.interval_hours,
+            "dry_run": dry_run,
+            "auto_repair": auto_repair,
+            "enabled": schedule.enabled,
+        });
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("✓ Scrub schedule configured");
+        println!("  Frequency:   {}", frequency);
+        println!("  Intensity:   {:?}", intensity_level);
+        println!("  Interval:    {} hours", schedule.interval_hours);
+        println!("  Dry run:     {}", dry_run);
+        println!("  Auto repair: {}", auto_repair);
+        println!("  Enabled:     {}", schedule.enabled);
+    }
+    
+    Ok(())
+}
+
+fn cmd_metrics_server(
+    pool_dir: &Path,
+    port: u16,
+    bind: &str,
+    json_output: bool
+) -> Result<()> {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use monitoring::PrometheusExporter;
+    
+    let metrics = Arc::new(Metrics::new());
+    let exporter = PrometheusExporter::new(metrics);
+    
+    let addr = format!("{}:{}", bind, port);
+    let listener = TcpListener::bind(&addr)
+        .context(format!("Failed to bind to {}", addr))?;
+    
+    if json_output {
+        let result = serde_json::json!({
+            "status": "running",
+            "endpoint": format!("http://{}/metrics", addr),
+            "port": port,
+            "bind": bind,
+        });
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!("✓ Prometheus metrics server started");
+        println!("  Endpoint: http://{}/metrics", addr);
+        println!("  Listening on {}:{}", bind, port);
+        println!();
+        println!("Press Ctrl+C to stop...");
+    }
+    
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                let mut buffer = [0; 1024];
+                if stream.read(&mut buffer).is_ok() {
+                    let request = String::from_utf8_lossy(&buffer);
+                    
+                    if request.contains("GET /metrics") {
+                        let metrics_text = exporter.export();
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nContent-Length: {}\r\n\r\n{}",
+                            metrics_text.len(),
+                            metrics_text
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    } else if request.contains("GET /health") {
+                        let health = r#"{"status":"ok"}"#;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            health.len(),
+                            health
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    } else {
+                        let not_found = "404 Not Found\nAvailable endpoints:\n  /metrics - Prometheus metrics\n  /health - Health check\n";
+                        let response = format!(
+                            "HTTP/1.1 404 NOT FOUND\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+                            not_found.len(),
+                            not_found
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Connection failed: {}", e);
+            }
+        }
+    }
+    
+    Ok(())
+}

@@ -20,6 +20,7 @@ mod write_optimizer;
 mod adaptive;
 mod snapshots;
 mod tiering;
+mod backup_evolution;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;

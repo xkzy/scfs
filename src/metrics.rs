@@ -40,6 +40,13 @@ pub struct Metrics {
     pub group_commit_ops: Arc<AtomicU64>,
     pub io_queue_length: Arc<AtomicU64>,
     pub io_ops_completed: Arc<AtomicU64>,
+    
+    // Phase 12: Defragmentation & TRIM metrics
+    pub defrag_runs_completed: Arc<AtomicU64>,
+    pub defrag_extents_moved: Arc<AtomicU64>,
+    pub defrag_bytes_moved: Arc<AtomicU64>,
+    pub trim_operations: Arc<AtomicU64>,
+    pub trim_bytes_reclaimed: Arc<AtomicU64>,
 }
 
 impl Metrics {
@@ -75,6 +82,13 @@ impl Metrics {
             group_commit_ops: Arc::new(AtomicU64::new(0)),
             io_queue_length: Arc::new(AtomicU64::new(0)),
             io_ops_completed: Arc::new(AtomicU64::new(0)),
+            
+            // Phase 12: Defragmentation & TRIM metrics
+            defrag_runs_completed: Arc::new(AtomicU64::new(0)),
+            defrag_extents_moved: Arc::new(AtomicU64::new(0)),
+            defrag_bytes_moved: Arc::new(AtomicU64::new(0)),
+            trim_operations: Arc::new(AtomicU64::new(0)),
+            trim_bytes_reclaimed: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -190,6 +204,11 @@ impl Metrics {
             group_commit_ops: self.group_commit_ops.load(Ordering::Relaxed),
             io_queue_length: self.io_queue_length.load(Ordering::Relaxed),
             io_ops_completed: self.io_ops_completed.load(Ordering::Relaxed),
+            defrag_runs_completed: self.defrag_runs_completed.load(Ordering::Relaxed),
+            defrag_extents_moved: self.defrag_extents_moved.load(Ordering::Relaxed),
+            defrag_bytes_moved: self.defrag_bytes_moved.load(Ordering::Relaxed),
+            trim_operations: self.trim_operations.load(Ordering::Relaxed),
+            trim_bytes_reclaimed: self.trim_bytes_reclaimed.load(Ordering::Relaxed),
         }
     }
 }
@@ -228,6 +247,12 @@ pub struct MetricsSnapshot {
     pub group_commit_ops: u64,
     pub io_queue_length: u64,
     pub io_ops_completed: u64,
+    // Phase 12: Defragmentation & TRIM metrics
+    pub defrag_runs_completed: u64,
+    pub defrag_extents_moved: u64,
+    pub defrag_bytes_moved: u64,
+    pub trim_operations: u64,
+    pub trim_bytes_reclaimed: u64,
 }
 
 impl MetricsSnapshot {

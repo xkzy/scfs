@@ -1,13 +1,16 @@
 mod cli;
+mod config;
 mod crash_sim;
 mod disk;
 mod extent;
 mod fuse_impl;
 mod gc;
 mod hmm_classifier;
+mod logging;
 mod metadata;
 mod metadata_tx;
 mod metrics;
+mod monitoring;
 #[cfg(test)]
 mod phase_1_3_tests;
 mod perf;

@@ -283,8 +283,8 @@ Metadata updates are atomic via write-then-rename pattern. Fragment writes are v
 - Single-node only (no network distribution)
 - No caching optimizations
 - No concurrent write optimization
-- Basic FUSE operations (no extended attributes, etc.)
-- Manual command invocation for policy changes (no automated policies yet)
+- Phase 16: Full FUSE operation support (extended attributes, mmap, locks, fallocate, ACLs, ioctls)
+- Phase 17: Automated intelligent policies (policy engine with ML-driven recommendations and safe automation)
 - Background scrubbing not yet implemented (Phase 3)
 
 ## Fixed Since Initial Prototype
@@ -320,9 +320,9 @@ Metadata updates are atomic via write-then-rename pattern. Fragment writes are v
 - **Phase 2**: Enhanced failure handling with targeted rebuilds
 - **Phase 3**: Background scrubbing and self-healing
 - **Phase 4**: Structured logging and Prometheus metrics
-- **Phase 5**: Performance optimizations (caching, parallel I/O)
+- **Phase 5**: Performance optimizations (see Phase 14: Multi-level caching, Phase 10: tiered placement & parallel I/O, Phase 15: concurrent read/write optimization)
 - **Phase 6**: Snapshots and point-in-time recovery
-- **Phase 7**: Multi-node distribution with data replication
+- **Phase 13**: Multi-node network distribution (see `PRODUCTION_ROADMAP.md` Phase 13) — cluster RPC, metadata consensus, cross-node replication, and rebalancing
 - **Phase 8**: Security hardening and privilege dropping
 
 See [PRODUCTION_ROADMAP.md](PRODUCTION_ROADMAP.md) for detailed hardening plan (12-18 weeks).

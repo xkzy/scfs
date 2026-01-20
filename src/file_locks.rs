@@ -21,6 +21,14 @@ pub struct FileLock {
 }
 
 /// Lock manager for handling file locks
+/// 
+/// Current implementation uses Vec<FileLock> which results in O(m) operations
+/// for lock conflict checking and removal, where m is the number of active locks.
+/// 
+/// Future optimization: For files with many locks (m >> 10), consider using:
+/// - BTreeMap keyed by start offset for O(log m) range queries
+/// - Interval tree for O(log m) overlap detection
+/// - Current implementation is sufficient for typical use cases (< 100 locks/file)
 pub struct LockManager {
     locks: Arc<RwLock<HashMap<u64, Vec<FileLock>>>>, // inode -> locks
 }

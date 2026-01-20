@@ -765,20 +765,21 @@ impl Filesystem for DynamicFS {
         };
         
         // Handle punch hole
+        // NOTE: Current implementation returns success but does not actually
+        // create sparse regions. Data remains allocated. This is a known
+        // limitation documented in PHASE_16_COMPLETE.md under "Limitations".
+        // Future enhancement: Implement true sparse file support with extent splitting.
         if mode & libc::FALLOC_FL_PUNCH_HOLE != 0 {
-            // For punch hole, we zero out the range
-            // In a production system, this would mark the range as sparse
-            log::info!("Punch hole: offset={}, length={}", offset, length);
-            
-            // For now, we don't actually implement sparse files
-            // Just return success
+            log::info!("Punch hole: offset={}, length={} (data remains allocated)", offset, length);
             reply.ok();
             return;
         }
         
         // Handle zero range
+        // NOTE: Similar to punch hole, this claims success but doesn't zero data.
+        // Future enhancement: Actually zero the specified range.
         if mode & libc::FALLOC_FL_ZERO_RANGE != 0 {
-            log::info!("Zero range: offset={}, length={}", offset, length);
+            log::info!("Zero range: offset={}, length={} (data remains allocated)", offset, length);
             reply.ok();
             return;
         }

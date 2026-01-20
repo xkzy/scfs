@@ -220,4 +220,11 @@ pub enum Commands {
         #[arg(short, long, default_value = "10")]
         operations: usize,
     },
+    
+    /// Check system health with diagnostics
+    Health {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
 }

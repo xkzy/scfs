@@ -75,6 +75,7 @@ fn main() -> Result<()> {
         Commands::Metrics { pool } => cmd_metrics(&pool, json_output),
         Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint, json_output),
         Commands::Benchmark { pool, file_size, operations } => cmd_benchmark(&pool, file_size, operations, json_output),
+        Commands::Health { pool } => cmd_health(&pool, json_output),
     }
 }
 
@@ -898,4 +899,123 @@ fn cmd_benchmark(pool_dir: &Path, file_size: usize, operations: usize, json_outp
     Ok(())
 }
 
+
+
+fn cmd_health(pool_dir: &Path, json_output: bool) -> Result<()> {
+    // Load filesystem data
+    let pool = DiskPool::load(pool_dir)?;
+    let disks = pool.load_disks()?;
+    let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
+    let extents = metadata.list_all_extents()?;
+    
+    // Calculate health metrics
+    let mut healthy_disks = 0;
+    let mut degraded_disks = 0;
+    let mut failed_disks = 0;
+    let mut total_disk_capacity = 0u64;
+    let mut total_disk_used = 0u64;
+    
+    for disk in &disks {
+        match disk.health {
+            disk::DiskHealth::Healthy => healthy_disks += 1,
+            disk::DiskHealth::Failed => failed_disks += 1,
+            _ => degraded_disks += 1,
+        }
+        total_disk_capacity += disk.capacity_bytes;
+        total_disk_used += disk.used_bytes;
+    }
+    
+    let mut healthy_extents = 0;
+    let mut degraded_extents = 0;
+    let mut unreadable_extents = 0;
+    
+    for extent in &extents {
+        if extent.is_complete() {
+            healthy_extents += 1;
+        } else if extent.is_readable() {
+            degraded_extents += 1;
+        } else {
+            unreadable_extents += 1;
+        }
+    }
+    
+    // Determine overall health status
+    let health_status = if unreadable_extents > 0 {
+        "critical"
+    } else if failed_disks > 0 || degraded_extents > 0 {
+        "degraded"
+    } else {
+        "healthy"
+    };
+    
+    if json_output {
+        let health_json = serde_json::json!({
+            "status": health_status,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "disks": {
+                "total": disks.len(),
+                "healthy": healthy_disks,
+                "degraded": degraded_disks,
+                "failed": failed_disks,
+                "capacity_bytes": total_disk_capacity,
+                "used_bytes": total_disk_used,
+                "utilization_percent": if total_disk_capacity > 0 {
+                    (total_disk_used as f64 / total_disk_capacity as f64) * 100.0
+                } else {
+                    0.0
+                }
+            },
+            "extents": {
+                "total": extents.len(),
+                "healthy": healthy_extents,
+                "degraded": degraded_extents,
+                "unreadable": unreadable_extents
+            },
+            "metrics": {
+                "iops": 0,
+                "throughput_mbps": 0.0
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&health_json)?);
+    } else {
+        println!("DynamicFS Health Status");
+        println!("======================");
+        println!();
+        println!("Overall Status: {}", health_status.to_uppercase());
+        println!();
+        println!("Disk Health:");
+        println!("  Healthy:  {} / {}", healthy_disks, disks.len());
+        println!("  Degraded: {}", degraded_disks);
+        println!("  Failed:   {}", failed_disks);
+        println!("  Capacity: {} MB / {} MB", 
+            total_disk_used / 1024 / 1024,
+            total_disk_capacity / 1024 / 1024
+        );
+        println!("  Usage:    {:.1}%", 
+            if total_disk_capacity > 0 {
+                (total_disk_used as f64 / total_disk_capacity as f64) * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!();
+        println!("Data Integrity:");
+        println!("  Healthy extents:   {}", healthy_extents);
+        println!("  Degraded extents:  {}", degraded_extents);
+        println!("  Unreadable extents: {}", unreadable_extents);
+        println!();
+        
+        if unreadable_extents > 0 {
+            println!("⚠ CRITICAL: {} unreadable extents - immediate action required!", unreadable_extents);
+        } else if failed_disks > 0 {
+            println!("⚠ WARNING: {} failed disks - rebuild in progress", failed_disks);
+        } else if degraded_extents > 0 {
+            println!("⚠ NOTICE: {} degraded extents - rebuild recommended", degraded_extents);
+        } else {
+            println!("✓ All systems nominal");
+        }
+    }
+    
+    Ok(())
+}
 

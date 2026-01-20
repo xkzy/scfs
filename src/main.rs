@@ -7,6 +7,7 @@ mod gc;
 mod hmm_classifier;
 mod metadata;
 mod metadata_tx;
+mod metrics;
 #[cfg(test)]
 mod phase_1_3_tests;
 mod placement;
@@ -24,6 +25,7 @@ use disk::{Disk, DiskPool};
 use extent::RedundancyPolicy;
 use fuse_impl::DynamicFS;
 use metadata::MetadataManager;
+use metrics::Metrics;
 use storage::StorageEngine;
 
 fn main() -> Result<()> {
@@ -55,6 +57,7 @@ fn main() -> Result<()> {
         Commands::ProbeDisks { pool } => cmd_probe_disks(&pool),
         Commands::Scrub { pool, repair } => cmd_scrub(&pool, repair),
         Commands::Status { pool } => cmd_status(&pool),
+        Commands::Metrics { pool } => cmd_metrics(&pool),
         Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint),
     }
 }
@@ -567,6 +570,17 @@ fn cmd_list_hot(_pool_dir: &Path) -> Result<()> {
     
     // In a real implementation, this would query the storage engine
     println!("Note: Access statistics are tracked during operation");
+    
+    Ok(())
+}
+
+fn cmd_metrics(_pool_dir: &Path) -> Result<()> {
+    // Create default metrics snapshot for demo
+    let snapshot = metrics::Metrics::new().snapshot();
+    println!("{}", snapshot);
+    println!();
+    println!("Note: Metrics are collected during filesystem operation.");
+    println!("These are default/zero values; actual metrics require an active mounted instance.");
     
     Ok(())
 }

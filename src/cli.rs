@@ -183,6 +183,13 @@ pub enum Commands {
         #[arg(short, long)]
         pool: PathBuf,
     },
+
+    /// Display system metrics
+    Metrics {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
     
     /// Mount the filesystem
     Mount {

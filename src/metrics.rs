@@ -1,0 +1,236 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use uuid::Uuid;
+
+/// System-wide metrics collection
+#[derive(Debug, Clone)]
+pub struct Metrics {
+    // Disk metrics
+    pub disk_reads: Arc<AtomicU64>,
+    pub disk_writes: Arc<AtomicU64>,
+    pub disk_read_bytes: Arc<AtomicU64>,
+    pub disk_write_bytes: Arc<AtomicU64>,
+    pub disk_errors: Arc<AtomicU64>,
+
+    // Extent metrics
+    pub extents_healthy: Arc<AtomicU64>,
+    pub extents_degraded: Arc<AtomicU64>,
+    pub extents_unrecoverable: Arc<AtomicU64>,
+
+    // Rebuild metrics
+    pub rebuilds_attempted: Arc<AtomicU64>,
+    pub rebuilds_successful: Arc<AtomicU64>,
+    pub rebuilds_failed: Arc<AtomicU64>,
+    pub rebuild_bytes_written: Arc<AtomicU64>,
+
+    // Scrub metrics
+    pub scrubs_completed: Arc<AtomicU64>,
+    pub scrub_issues_found: Arc<AtomicU64>,
+    pub scrub_repairs_attempted: Arc<AtomicU64>,
+    pub scrub_repairs_successful: Arc<AtomicU64>,
+
+    // Cache metrics
+    pub cache_hits: Arc<AtomicU64>,
+    pub cache_misses: Arc<AtomicU64>,
+}
+
+impl Metrics {
+    pub fn new() -> Self {
+        Metrics {
+            disk_reads: Arc::new(AtomicU64::new(0)),
+            disk_writes: Arc::new(AtomicU64::new(0)),
+            disk_read_bytes: Arc::new(AtomicU64::new(0)),
+            disk_write_bytes: Arc::new(AtomicU64::new(0)),
+            disk_errors: Arc::new(AtomicU64::new(0)),
+
+            extents_healthy: Arc::new(AtomicU64::new(0)),
+            extents_degraded: Arc::new(AtomicU64::new(0)),
+            extents_unrecoverable: Arc::new(AtomicU64::new(0)),
+
+            rebuilds_attempted: Arc::new(AtomicU64::new(0)),
+            rebuilds_successful: Arc::new(AtomicU64::new(0)),
+            rebuilds_failed: Arc::new(AtomicU64::new(0)),
+            rebuild_bytes_written: Arc::new(AtomicU64::new(0)),
+
+            scrubs_completed: Arc::new(AtomicU64::new(0)),
+            scrub_issues_found: Arc::new(AtomicU64::new(0)),
+            scrub_repairs_attempted: Arc::new(AtomicU64::new(0)),
+            scrub_repairs_successful: Arc::new(AtomicU64::new(0)),
+
+            cache_hits: Arc::new(AtomicU64::new(0)),
+            cache_misses: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub fn record_disk_read(&self, bytes: u64) {
+        self.disk_reads.fetch_add(1, Ordering::Relaxed);
+        self.disk_read_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn record_disk_write(&self, bytes: u64) {
+        self.disk_writes.fetch_add(1, Ordering::Relaxed);
+        self.disk_write_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn record_disk_error(&self) {
+        self.disk_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_rebuild_start(&self) {
+        self.rebuilds_attempted.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_rebuild_success(&self, bytes: u64) {
+        self.rebuilds_successful.fetch_add(1, Ordering::Relaxed);
+        self.rebuild_bytes_written.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn record_rebuild_failure(&self) {
+        self.rebuilds_failed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_scrub_completed(&self, issues: u64, repairs: u64, successful: u64) {
+        self.scrubs_completed.fetch_add(1, Ordering::Relaxed);
+        self.scrub_issues_found.fetch_add(issues, Ordering::Relaxed);
+        self.scrub_repairs_attempted.fetch_add(repairs, Ordering::Relaxed);
+        self.scrub_repairs_successful.fetch_add(successful, Ordering::Relaxed);
+    }
+
+    pub fn record_cache_hit(&self) {
+        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_cache_miss(&self) {
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Get snapshot of all metrics
+    pub fn snapshot(&self) -> MetricsSnapshot {
+        MetricsSnapshot {
+            disk_reads: self.disk_reads.load(Ordering::Relaxed),
+            disk_writes: self.disk_writes.load(Ordering::Relaxed),
+            disk_read_bytes: self.disk_read_bytes.load(Ordering::Relaxed),
+            disk_write_bytes: self.disk_write_bytes.load(Ordering::Relaxed),
+            disk_errors: self.disk_errors.load(Ordering::Relaxed),
+            extents_healthy: self.extents_healthy.load(Ordering::Relaxed),
+            extents_degraded: self.extents_degraded.load(Ordering::Relaxed),
+            extents_unrecoverable: self.extents_unrecoverable.load(Ordering::Relaxed),
+            rebuilds_attempted: self.rebuilds_attempted.load(Ordering::Relaxed),
+            rebuilds_successful: self.rebuilds_successful.load(Ordering::Relaxed),
+            rebuilds_failed: self.rebuilds_failed.load(Ordering::Relaxed),
+            rebuild_bytes_written: self.rebuild_bytes_written.load(Ordering::Relaxed),
+            scrubs_completed: self.scrubs_completed.load(Ordering::Relaxed),
+            scrub_issues_found: self.scrub_issues_found.load(Ordering::Relaxed),
+            scrub_repairs_attempted: self.scrub_repairs_attempted.load(Ordering::Relaxed),
+            scrub_repairs_successful: self.scrub_repairs_successful.load(Ordering::Relaxed),
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.cache_misses.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Point-in-time snapshot of metrics
+#[derive(Debug, Clone)]
+pub struct MetricsSnapshot {
+    pub disk_reads: u64,
+    pub disk_writes: u64,
+    pub disk_read_bytes: u64,
+    pub disk_write_bytes: u64,
+    pub disk_errors: u64,
+    pub extents_healthy: u64,
+    pub extents_degraded: u64,
+    pub extents_unrecoverable: u64,
+    pub rebuilds_attempted: u64,
+    pub rebuilds_successful: u64,
+    pub rebuilds_failed: u64,
+    pub rebuild_bytes_written: u64,
+    pub scrubs_completed: u64,
+    pub scrub_issues_found: u64,
+    pub scrub_repairs_attempted: u64,
+    pub scrub_repairs_successful: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+}
+
+impl MetricsSnapshot {
+    pub fn total_iops(&self) -> u64 {
+        self.disk_reads + self.disk_writes
+    }
+
+    pub fn total_bytes_transferred(&self) -> u64 {
+        self.disk_read_bytes + self.disk_write_bytes
+    }
+
+    pub fn rebuild_success_rate(&self) -> f64 {
+        if self.rebuilds_attempted == 0 {
+            100.0
+        } else {
+            100.0 * self.rebuilds_successful as f64 / self.rebuilds_attempted as f64
+        }
+    }
+
+    pub fn cache_hit_rate(&self) -> f64 {
+        let total = self.cache_hits + self.cache_misses;
+        if total == 0 {
+            0.0
+        } else {
+            100.0 * self.cache_hits as f64 / total as f64
+        }
+    }
+}
+
+impl std::fmt::Display for MetricsSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            r#"Metrics Snapshot:
+  Disk I/O:
+    Reads:  {} ({} bytes)
+    Writes: {} ({} bytes)
+    Errors: {}
+  Extents:
+    Healthy:      {}
+    Degraded:     {}
+    Unrecoverable: {}
+  Rebuilds:
+    Attempted:    {} (success rate: {:.1}%)
+    Successful:   {}
+    Failed:       {}
+    Bytes written: {}
+  Scrubs:
+    Completed:    {}
+    Issues found: {}
+    Repairs:      {} attempted, {} successful
+  Cache:
+    Hits:   {} (hit rate: {:.1}%)
+    Misses: {}
+"#,
+            self.disk_reads,
+            self.disk_read_bytes,
+            self.disk_writes,
+            self.disk_write_bytes,
+            self.disk_errors,
+            self.extents_healthy,
+            self.extents_degraded,
+            self.extents_unrecoverable,
+            self.rebuilds_attempted,
+            self.rebuild_success_rate(),
+            self.rebuilds_successful,
+            self.rebuilds_failed,
+            self.rebuild_bytes_written,
+            self.scrubs_completed,
+            self.scrub_issues_found,
+            self.scrub_repairs_attempted,
+            self.scrub_repairs_successful,
+            self.cache_hits,
+            self.cache_hit_rate(),
+            self.cache_misses,
+        )
+    }
+}

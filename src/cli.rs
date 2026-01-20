@@ -71,6 +71,21 @@ pub enum Commands {
         #[arg(short, long)]
         disk: PathBuf,
     },
+
+    /// Set disk health state (healthy|degraded|suspect|draining|failed)
+    SetDiskHealth {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+
+        /// Disk directory
+        #[arg(short, long)]
+        disk: PathBuf,
+
+        /// Target health state
+        #[arg(short, long)]
+        health: String,
+    },
     
     /// Change redundancy policy for a file
     ChangePolicy {
@@ -139,6 +154,13 @@ pub enum Commands {
     
     /// Show orphan statistics
     OrphanStats {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
+
+    /// Probe disks in the pool and update health state
+    ProbeDisks {
         /// Pool directory
         #[arg(short, long)]
         pool: PathBuf,

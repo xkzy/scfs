@@ -40,6 +40,7 @@ fn main() -> Result<()> {
         Commands::ListExtents { pool } => cmd_list_extents(&pool),
         Commands::ShowRedundancy { pool } => cmd_show_redundancy(&pool),
         Commands::FailDisk { pool, disk } => cmd_fail_disk(&pool, &disk),
+        Commands::SetDiskHealth { pool, disk, health } => cmd_set_disk_health(&pool, &disk, &health),
         Commands::ChangePolicy { pool, policy } => cmd_change_policy(&pool, &policy),
         Commands::PolicyStatus { pool } => cmd_policy_status(&pool),
         Commands::ListHot { pool } => cmd_list_hot(&pool),
@@ -50,8 +51,44 @@ fn main() -> Result<()> {
             cmd_cleanup_orphans(&pool, min_age_hours, dry_run)
         }
         Commands::OrphanStats { pool } => cmd_orphan_stats(&pool),
+        Commands::ProbeDisks { pool } => cmd_probe_disks(&pool),
         Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint),
     }
+}
+
+fn cmd_probe_disks(pool_dir: &Path) -> Result<()> {
+    println!("Probing disks in pool {:?}", pool_dir);
+
+    let pool = DiskPool::load(pool_dir)?;
+    let disk_paths = pool.disk_paths.clone();
+
+    for path in disk_paths {
+        match Disk::load(&path) {
+            Ok(mut disk) => {
+                if path.exists() {
+                    if disk.health == disk::DiskHealth::Failed {
+                        disk.health = disk::DiskHealth::Healthy;
+                        disk.save()?;
+                        println!("  Disk {} is reachable again: Failed -> Healthy", disk.uuid);
+                    } else {
+                        println!("  Disk {} is reachable: {:?}", disk.uuid, disk.health);
+                    }
+                } else {
+                    if disk.health != disk::DiskHealth::Failed {
+                        disk.mark_failed()?;
+                        println!("  Disk {} marked Failed (path missing)", disk.uuid);
+                    } else {
+                        println!("  Disk {} remains Failed (path missing)", disk.uuid);
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to load disk metadata at {:?}: {}", path, e);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn cmd_init(pool_dir: &Path) -> Result<()> {
@@ -210,6 +247,34 @@ fn cmd_fail_disk(pool_dir: &Path, disk_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn cmd_set_disk_health(_pool_dir: &Path, disk_path: &Path, health: &str) -> Result<()> {
+    let mut disk = Disk::load(disk_path)?;
+    let old_health = disk.health;
+
+    let new_health = match health.to_lowercase().as_str() {
+        "healthy" => disk::DiskHealth::Healthy,
+        "degraded" => disk::DiskHealth::Degraded,
+        "suspect" => disk::DiskHealth::Suspect,
+        "draining" => disk::DiskHealth::Draining,
+        "failed" => disk::DiskHealth::Failed,
+        _ => {
+            return Err(anyhow!(
+                "Invalid health '{}'. Use: healthy|degraded|suspect|draining|failed",
+                health
+            ))
+        }
+    };
+
+    disk.health = new_health;
+    disk.save()?;
+
+    println!(
+        "Disk {} health updated: {:?} -> {:?}",
+        disk.uuid, old_health, disk.health
+    );
+    Ok(())
+}
+
 fn cmd_change_policy(pool_dir: &Path, policy_str: &str) -> Result<()> {
     println!("Preparing to change redundancy policy...");
     
@@ -307,6 +372,12 @@ fn cmd_mount(pool_dir: &Path, mountpoint: &Path) -> Result<()> {
     // Initialize metadata and storage
     let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
     let storage = StorageEngine::new(metadata, disks);
+
+    // Perform mount-time rebuilds before mounting
+    if let Err(e) = storage.perform_mount_rebuild() {
+        log::error!("Mount-time rebuild failed: {}", e);
+    }
+
     let fs = DynamicFS::new(storage);
     
     println!();

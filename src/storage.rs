@@ -22,6 +22,56 @@ impl StorageEngine {
             placement: PlacementEngine,
         }
     }
+
+    /// Perform mount-time rebuild: scan extents and rebuild missing fragments where possible
+    pub fn perform_mount_rebuild(&self) -> Result<()> {
+        log::info!("Starting mount-time rebuild scan");
+        let mut metadata_w = self.metadata.write().unwrap();
+        let extents = metadata_w.list_all_extents()?;
+
+        for mut extent in extents {
+            let extent_uuid = extent.uuid;
+
+            // Read fragments
+            let disks = self.disks.read().unwrap();
+            let fragments = match self.read_fragments(&extent, &disks) {
+                Ok(f) => f,
+                Err(e) => {
+                    log::warn!("Failed to read fragments for extent {:?}: {:?}", extent_uuid, e);
+                    continue;
+                }
+            };
+            drop(disks);
+
+            let available_count = fragments.iter().filter(|f| f.is_some()).count();
+            let required = extent.redundancy.fragment_count();
+            let min_needed = extent.redundancy.min_fragments();
+
+            if available_count < required && available_count >= min_needed {
+                log::info!("Rebuilding extent {:?}: {}/{} available", extent_uuid, available_count, required);
+                extent.rebuild_in_progress = true;
+                extent.rebuild_progress = Some(available_count);
+                metadata_w.save_extent(&extent)?;
+
+                // perform rebuild
+                let mut disks_mut = self.disks.write().unwrap();
+                if let Err(e) = self.placement.rebuild_extent(&mut extent, &mut disks_mut, &fragments) {
+                    log::error!("Failed to rebuild extent {:?}: {:?}", extent_uuid, e);
+                    extent.rebuild_in_progress = false;
+                    metadata_w.save_extent(&extent)?;
+                    continue;
+                }
+
+                extent.rebuild_in_progress = false;
+                extent.rebuild_progress = Some(extent.fragment_locations.len());
+                metadata_w.save_extent(&extent)?;
+                log::info!("Rebuild complete for extent {:?}", extent_uuid);
+            }
+        }
+
+        log::info!("Mount-time rebuild scan complete");
+        Ok(())
+    }
     
     /// Write data to a file
     pub fn write_file(&self, ino: u64, data: &[u8], offset: u64) -> Result<()> {

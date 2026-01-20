@@ -20,9 +20,16 @@ pub struct Disk {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DiskHealth {
+    /// Fully operational (read/write)
     Healthy,
-    Draining,  // Being removed gracefully
-    Failed,    // Unavailable
+    /// Partial failures; read-only (never selected for new writes)
+    Degraded,
+    /// Intermittent errors; read-only (never selected for new writes)
+    Suspect,
+    /// Being removed gracefully; read-only (never selected for new writes)
+    Draining,
+    /// Completely offline/unavailable
+    Failed,
 }
 
 /// Guard to ensure temporary fragment files are cleaned up on failure

@@ -133,6 +133,8 @@ fn test_orphan_detection() -> Result<()> {
         previous_policy: None,
         policy_transitions: Vec::new(),
         last_policy_change: None,
+        rebuild_in_progress: false,
+        rebuild_progress: None,
     };
     metadata.save_extent(&extent1)?;
     

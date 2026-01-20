@@ -94,6 +94,10 @@ pub struct Extent {
     
     // New fields for hot/cold classification
     pub access_stats: AccessStats,
+
+    // Rebuild progress tracking
+    pub rebuild_in_progress: bool,
+    pub rebuild_progress: Option<usize>, // number of fragments rebuilt so far
 }
 
 /// Location of a fragment on a disk
@@ -130,6 +134,8 @@ impl Extent {
                 classification: AccessClassification::Cold,
                 hmm_classifier: Some(HmmClassifier::new()),
             },
+            rebuild_in_progress: false,
+            rebuild_progress: None,
         }
     }
     

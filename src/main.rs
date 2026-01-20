@@ -4,6 +4,7 @@ mod crash_sim;
 mod diagnostics;
 mod disk;
 mod extent;
+mod file_locks;
 mod fuse_impl;
 mod gc;
 mod hmm_classifier;
@@ -15,6 +16,8 @@ mod metrics;
 mod monitoring;
 #[cfg(test)]
 mod phase_1_3_tests;
+#[cfg(test)]
+mod phase_16_tests;
 mod perf;
 mod placement;
 mod redundancy;

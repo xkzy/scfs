@@ -258,6 +258,7 @@ impl TrimEngine {
         let pending_trims = Arc::clone(&self.pending_trims);
         let total_operations = Arc::clone(&self.total_operations);
         let total_bytes_trimmed = Arc::clone(&self.total_bytes_trimmed);
+        let total_ranges_trimmed = Arc::clone(&self.total_ranges_trimmed);
         let failed_operations = Arc::clone(&self.failed_operations);
         let last_trim_at = Arc::clone(&self.last_trim_at);
 
@@ -274,19 +275,18 @@ impl TrimEngine {
                 
                 if should_trim {
                     for disk in &disks {
-                        // Create a TrimEngine instance to call execute_trim
-                        let engine = TrimEngine {
-                            config: Arc::clone(&config),
-                            running: Arc::clone(&running),
-                            pending_trims: Arc::clone(&pending_trims),
-                            total_operations: Arc::clone(&total_operations),
-                            total_bytes_trimmed: Arc::clone(&total_bytes_trimmed),
-                            total_ranges_trimmed: Arc::new(AtomicU64::new(0)),
-                            failed_operations: Arc::clone(&failed_operations),
-                            last_trim_at: Arc::clone(&last_trim_at),
-                        };
-
-                        if let Err(e) = engine.execute_trim(disk.uuid, &metrics) {
+                        // Execute TRIM using the existing engine instance references
+                        if let Err(e) = Self::execute_trim_for_disk(
+                            &disk.uuid,
+                            &pending_trims,
+                            &config,
+                            &metrics,
+                            &total_operations,
+                            &total_bytes_trimmed,
+                            &total_ranges_trimmed,
+                            &failed_operations,
+                            &last_trim_at,
+                        ) {
                             eprintln!("TRIM error for disk {}: {}", disk.uuid, e);
                         }
                     }
@@ -357,8 +357,9 @@ impl TrimEngine {
 
     /// Perform actual TRIM operation on a range
     fn trim_range(range: &TrimRange, config: &TrimConfig) -> Result<u64> {
-        // For directory-backed storage, we can't use actual TRIM/DISCARD
+        // TODO: For directory-backed storage, we can't use actual TRIM/DISCARD
         // Instead, we can use fallocate with FALLOC_FL_PUNCH_HOLE to release space
+        // For production block devices, implement proper TRIM/DISCARD via ioctl
         
         if !range.path.exists() {
             // File already deleted, consider it trimmed
@@ -422,6 +423,88 @@ impl TrimEngine {
             .sum();
 
         total_pending_bytes >= config.intensity.batch_threshold_bytes()
+    }
+    
+    /// Execute TRIM for a single disk (helper for background thread)
+    fn execute_trim_for_disk(
+        disk_uuid: &Uuid,
+        pending_trims: &Arc<Mutex<HashMap<Uuid, VecDeque<TrimRange>>>>,
+        config: &Mutex<TrimConfig>,
+        metrics: &Metrics,
+        total_operations: &AtomicU64,
+        total_bytes_trimmed: &AtomicU64,
+        total_ranges_trimmed: &AtomicU64,
+        failed_operations: &AtomicU64,
+        last_trim_at: &Mutex<Option<i64>>,
+    ) -> Result<()> {
+        let cfg = config.lock().unwrap().clone();
+        if !cfg.enabled {
+            return Ok(());
+        }
+
+        let mut pending = pending_trims.lock().unwrap();
+        let ranges = match pending.get_mut(disk_uuid) {
+            Some(queue) => queue,
+            None => return Ok(()),
+        };
+
+        if ranges.is_empty() {
+            return Ok(());
+        }
+
+        // Build batch up to threshold
+        let mut batch = Vec::new();
+        let mut total_bytes = 0u64;
+        let threshold_bytes = cfg.batch_size_mb * 1024 * 1024;
+
+        while total_bytes < threshold_bytes {
+            match ranges.pop_front() {
+                Some(range) => {
+                    total_bytes += range.length;
+                    batch.push(range);
+                }
+                None => break,
+            }
+        }
+
+        drop(pending); // Release lock before I/O
+
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        // Execute TRIM operations
+        let mut bytes_trimmed = 0u64;
+        for range in &batch {
+            match Self::trim_range(&range, &cfg) {
+                Ok(bytes) => {
+                    bytes_trimmed += bytes;
+                    total_ranges_trimmed.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(e) => {
+                    eprintln!("Failed to TRIM {}: {}", range.path.display(), e);
+                    failed_operations.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+
+        // Update statistics
+        total_operations.fetch_add(1, Ordering::SeqCst);
+        total_bytes_trimmed.fetch_add(bytes_trimmed, Ordering::SeqCst);
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        *last_trim_at.lock().unwrap() = Some(timestamp);
+
+        // Update metrics
+        metrics.trim_operations.fetch_add(1, Ordering::SeqCst);
+        metrics
+            .trim_bytes_reclaimed
+            .fetch_add(bytes_trimmed, Ordering::SeqCst);
+
+        Ok(())
     }
 }
 

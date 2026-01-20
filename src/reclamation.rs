@@ -361,6 +361,12 @@ impl ReclamationPolicyEngine {
         storage: &StorageEngine,
         config: &PolicyEngineConfig,
     ) -> Result<Option<ReclamationTrigger>> {
+        // TODO: Complete implementation of fragmentation trigger
+        // This currently only checks capacity. For production, also implement:
+        // 1. Call defrag_engine.analyze_fragmentation() for fragmentation check
+        // 2. Check time-based schedule against last_run timestamp
+        // 3. Implement manual trigger mechanism
+        
         // Check capacity trigger
         let disks = storage.get_disks();
         let total_capacity: u64 = disks.iter().map(|d| d.capacity_bytes).sum();
@@ -375,9 +381,8 @@ impl ReclamationPolicyEngine {
             return Ok(Some(ReclamationTrigger::Capacity));
         }
 
-        // Check fragmentation trigger
-        // This would require analyzing fragmentation, simplified for now
-        // In a real implementation, we'd call defrag_engine.analyze_fragmentation()
+        // Fragmentation trigger (simplified - would need defrag_engine integration)
+        // In full implementation, call defrag_engine.analyze_fragmentation()
 
         Ok(None)
     }

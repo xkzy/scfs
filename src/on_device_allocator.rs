@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use crc32fast;
 use nix::fcntl::{flock, FlockArg};
+use serde::{Serialize, Deserialize};
 
 const SUPERBLOCK_MAGIC: &[u8; 8] = b"DFSBLOCK";
 const SUPERBLOCK_VERSION: u32 = 1;
@@ -129,6 +130,12 @@ pub struct FragmentHeader {
     pub data_checksum: [u8; 32],
 }
 
+/// Placement details for on-device fragment
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnDevicePlacement {
+    pub start_unit: u64,
+    pub unit_count: u64,
+}
 impl FragmentHeader {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(16 + 4 + 8 + 32 + 4);
@@ -310,7 +317,7 @@ impl OnDeviceAllocator {
 
     /// Write a fragment (header + data) into the allocated units starting at `start_unit`.
     /// Steps: write header+data (padded to units), fdatasync, persist bitmap & bump superblock.
-    pub fn write_fragment_at(&mut self, start_unit: u64, data: &[u8], hdr: &FragmentHeader) -> Result<()> {
+    pub fn write_fragment_at(&mut self, start_unit: u64, data: &[u8], hdr: &FragmentHeader) -> Result<OnDevicePlacement> {
         let n_units = ((hdr.total_length + (16 + 4 + 8 + 32 + 4) as u64) + self.unit_size - 1) / self.unit_size;
         if start_unit + n_units > self.total_units {
             anyhow::bail!("allocation out of range");
@@ -332,7 +339,8 @@ impl OnDeviceAllocator {
 
         // Persist allocator bitmap and superblock
         self.persist()?;
-        Ok(())
+
+        Ok(OnDevicePlacement { start_unit, unit_count: n_units })
     }
 
     /// Read a fragment from start_unit and verify header checksum and data checksum

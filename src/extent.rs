@@ -108,6 +108,8 @@ pub struct Extent {
 pub struct FragmentLocation {
     pub disk_uuid: Uuid,
     pub fragment_index: usize,
+    /// Optional on-device placement information (start unit + unit_count)
+    pub on_device: Option<crate::on_device_allocator::OnDevicePlacement>,
 }
 
 impl Extent {

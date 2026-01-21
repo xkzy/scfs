@@ -312,7 +312,7 @@ impl Disk {
         extent_uuid: &Uuid,
         fragment_index: usize,
         data: &[u8],
-    ) -> Result<()> {
+    ) -> Result<Option<crate::on_device_allocator::OnDevicePlacement>> {
         // Handle block device backed disks using on-device allocator when available
         if self.kind == DiskKind::BlockDevice {
             if let Some(oda) = &mut self.on_device_allocator {
@@ -332,7 +332,7 @@ impl Disk {
                 #[cfg(test)]
                 check_crash_point(CrashPoint::BeforeFragmentWrite)?;
 
-                oda.write_fragment_at(start, data, &hdr)?;
+                let placement = oda.write_fragment_at(start, data, &hdr)?;
 
                 #[cfg(test)]
                 check_crash_point(CrashPoint::AfterFragmentWrite)?;
@@ -345,7 +345,7 @@ impl Disk {
 
                 self.used_bytes += data.len() as u64;
                 self.save()?;
-                return Ok(());
+                return Ok(Some(placement));
             } else {
                 return Err(anyhow!("Block device missing on-device allocator (not formatted)"));
             }
@@ -399,7 +399,7 @@ impl Disk {
         self.used_bytes += data.len() as u64;
         self.save()?;
         
-        Ok(())
+        Ok(None)
     }
     
     /// Read a fragment from disk

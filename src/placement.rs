@@ -73,19 +73,23 @@ impl PlacementEngine {
                  .find(|d| &d.uuid == disk_uuid)
                  .ok_or_else(|| anyhow!("Disk not found: {}", disk_uuid))?;
              
-             if let Err(err) = disk.write_fragment(&extent.uuid, fragment_index, fragment_data) {
-                 // Cleanup any fragments written so far
-                 for location in &written_locations {
-                     if let Some(disk) = disks.iter_mut().find(|d| d.uuid == location.disk_uuid) {
-                         disk.delete_fragment(&extent.uuid, location.fragment_index).ok();
+             let placement = match disk.write_fragment(&extent.uuid, fragment_index, fragment_data) {
+                 Ok(p) => p,
+                 Err(err) => {
+                     // Cleanup any fragments written so far
+                     for location in &written_locations {
+                         if let Some(disk) = disks.iter_mut().find(|d| d.uuid == location.disk_uuid) {
+                             disk.delete_fragment(&extent.uuid, location.fragment_index).ok();
+                         }
                      }
+                     return Err(err);
                  }
-                 return Err(err);
-             }
+             };
              
              written_locations.push(FragmentLocation {
                  disk_uuid: *disk_uuid,
                  fragment_index,
+                 on_device: placement,
              });
              
              log::debug!(
@@ -171,12 +175,13 @@ impl PlacementEngine {
                 .find(|d| d.uuid == target_disk_uuid)
                 .unwrap();
             
-            disk.write_fragment(&extent.uuid, missing_index, fragment_data)?;
+            let placement = disk.write_fragment(&extent.uuid, missing_index, fragment_data)?;
             
             // Record location
             extent.fragment_locations.push(FragmentLocation {
                 disk_uuid: target_disk_uuid,
                 fragment_index: missing_index,
+                on_device: placement,
             });
             
             log::info!(
@@ -267,11 +272,12 @@ impl PlacementEngine {
                 .find(|d| &d.uuid == disk_uuid)
                 .ok_or_else(|| anyhow!("Disk not found: {}", disk_uuid))?;
             
-            disk.write_fragment(&extent.uuid, fragment_index, fragment_data)?;
+            let placement = disk.write_fragment(&extent.uuid, fragment_index, fragment_data)?;
             
             extent.fragment_locations.push(FragmentLocation {
                 disk_uuid: *disk_uuid,
                 fragment_index,
+                on_device: placement,
             });
             
             log::debug!(

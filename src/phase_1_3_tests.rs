@@ -115,10 +115,12 @@ fn test_orphan_detection() -> Result<()> {
             FragmentLocation {
                 disk_uuid: disk.uuid,
                 fragment_index: 0,
+                on_device: None,
             },
             FragmentLocation {
                 disk_uuid: disk.uuid,
                 fragment_index: 1,
+                on_device: None,
             },
         ],
         access_stats: crate::extent::AccessStats {

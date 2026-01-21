@@ -19,6 +19,7 @@ fn write_fragment_refused_on_block_device() -> Result<()> {
         kind: DiskKind::BlockDevice,
         allocator: None,
         free_index: None,
+        on_device_allocator: None,
     };
 
     let res = disk.write_fragment(&Uuid::new_v4(), 0, b"hello");

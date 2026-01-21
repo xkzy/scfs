@@ -258,6 +258,7 @@ mod tests {
                 FragmentLocation {
                     disk_uuid: Uuid::new_v4(),
                     fragment_index: 0,
+                    on_device: None,
                 },
             ],
             previous_policy: None,

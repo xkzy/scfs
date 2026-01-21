@@ -112,3 +112,86 @@ pub fn open_and_check_o_direct(path: &Path) -> Result<bool> {
     let fd = f.as_raw_fd();
     fd_has_o_direct(fd)
 }
+
+/// Perform a direct pwrite using an aligned buffer. Ensures buffer pointer and size and offset
+/// are alignment multiples required for O_DIRECT-friendly I/O. Retries on EINTR.
+pub fn pwrite_direct(fd: RawFd, buf: &AlignedBuf, offset: u64) -> Result<usize> {
+    // Ensure alignment requirements
+    if (buf.as_ptr() as usize) % buf.alignment() != 0 {
+        anyhow::bail!("buffer pointer not aligned");
+    }
+    if buf.len() % buf.alignment() != 0 {
+        anyhow::bail!("buffer length must be a multiple of alignment");
+    }
+    if (offset as usize) % buf.alignment() != 0 {
+        anyhow::bail!("offset must be a multiple of alignment");
+    }
+
+    let mut written = 0usize;
+    let mut to_write = buf.len();
+    let mut ptr = buf.as_mut_ptr() as *const libc::c_void;
+    let mut off = offset as libc::off_t;
+
+    while to_write > 0 {
+        let ret = unsafe { libc::pwrite(fd, ptr, to_write, off) };
+        if ret < 0 {
+            let eno = io::Error::last_os_error();
+            if eno.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(eno.into());
+        }
+        let wrote = ret as usize;
+        written += wrote;
+        if wrote == 0 {
+            break;
+        }
+        to_write -= wrote;
+        // advance pointer and offset
+        ptr = unsafe { (ptr as *const u8).add(wrote) as *const libc::c_void };
+        off += wrote as libc::off_t;
+    }
+
+    Ok(written)
+}
+
+/// Perform a direct pread into an aligned buffer. Ensures buffer pointer and size and offset
+/// are alignment multiples required for O_DIRECT-friendly I/O. Retries on EINTR.
+pub fn pread_direct(fd: RawFd, buf: &mut AlignedBuf, offset: u64) -> Result<usize> {
+    // Ensure alignment requirements
+    if (buf.as_ptr() as usize) % buf.alignment() != 0 {
+        anyhow::bail!("buffer pointer not aligned");
+    }
+    if buf.len() % buf.alignment() != 0 {
+        anyhow::bail!("buffer length must be a multiple of alignment");
+    }
+    if (offset as usize) % buf.alignment() != 0 {
+        anyhow::bail!("offset must be a multiple of alignment");
+    }
+
+    let mut read = 0usize;
+    let mut to_read = buf.len();
+    let mut ptr = buf.as_mut_ptr() as *mut libc::c_void;
+    let mut off = offset as libc::off_t;
+
+    while to_read > 0 {
+        let ret = unsafe { libc::pread(fd, ptr, to_read, off) };
+        if ret < 0 {
+            let eno = io::Error::last_os_error();
+            if eno.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(eno.into());
+        }
+        let r = ret as usize;
+        read += r;
+        if r == 0 {
+            break;
+        }
+        to_read -= r;
+        ptr = unsafe { (ptr as *mut u8).add(r) as *mut libc::c_void };
+        off += r as libc::off_t;
+    }
+
+    Ok(read)
+}

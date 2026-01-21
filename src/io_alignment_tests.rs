@@ -50,3 +50,42 @@ fn test_open_o_direct_flag() -> Result<()> {
         }
     }
 }
+
+#[test]
+fn test_pread_pwrite_direct() -> Result<()> {
+    let tmp = NamedTempFile::new()?;
+    let path = tmp.path().to_path_buf();
+
+    // Try to open with O_DIRECT; if not supported, skip the strict test
+    let f = match open_with_o_direct(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Skipping direct I/O test (open O_DIRECT failed): {}", e);
+            return Ok(());
+        }
+    };
+
+    let fd = f.as_raw_fd();
+
+    // Allocate aligned buffers
+    let mut wbuf = AlignedBuf::new(4096, 4096)?;
+    for i in 0..wbuf.len() {
+        wbuf.as_mut_slice()[i] = (i % 256) as u8;
+    }
+
+    // Write at offset 0
+    let wrote = crate::io_alignment::pwrite_direct(fd, &wbuf, 0)?;
+    assert_eq!(wrote, wbuf.len());
+
+    // Read back
+    let mut rbuf = AlignedBuf::new(4096, 4096)?;
+    let read = crate::io_alignment::pread_direct(fd, &mut rbuf, 0)?;
+    assert_eq!(read, rbuf.len());
+    assert_eq!(rbuf.as_slice(), wbuf.as_slice());
+
+    // Misaligned offset should error
+    let mis = crate::io_alignment::pwrite_direct(fd, &wbuf, 1);
+    assert!(mis.is_err());
+
+    Ok(())
+}

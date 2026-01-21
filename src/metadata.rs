@@ -16,6 +16,30 @@ pub enum FileType {
     Directory,
 }
 
+/// Extended attributes storage
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExtendedAttributes {
+    pub attrs: std::collections::BTreeMap<String, Vec<u8>>,  // BTreeMap for deterministic serialization
+}
+
+/// ACL entry for access control
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AclEntry {
+    pub tag: AclTag,
+    pub qualifier: Option<u32>, // uid/gid for USER/GROUP tags
+    pub permissions: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AclTag {
+    UserObj,     // ACL_USER_OBJ
+    User,        // ACL_USER
+    GroupObj,    // ACL_GROUP_OBJ
+    Group,       // ACL_GROUP
+    Mask,        // ACL_MASK
+    Other,       // ACL_OTHER
+}
+
 /// Inode represents a file or directory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Inode {
@@ -30,6 +54,10 @@ pub struct Inode {
     pub uid: u32,
     pub gid: u32,
     pub mode: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub xattrs: Option<ExtendedAttributes>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub acl: Option<Vec<AclEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,  // BLAKE3 checksum of serialized inode (excluding this field)
 }
@@ -49,6 +77,8 @@ impl Inode {
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
             mode: 0o644,
+            xattrs: None,
+            acl: None,
             checksum: None,
         }
     }
@@ -67,8 +97,34 @@ impl Inode {
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
             mode: 0o755,
+            xattrs: None,
+            acl: None,
             checksum: None,
         }
+    }
+    
+    /// Get extended attribute
+    pub fn get_xattr(&self, name: &str) -> Option<&[u8]> {
+        self.xattrs.as_ref()?.attrs.get(name).map(|v| v.as_slice())
+    }
+    
+    /// Set extended attribute
+    pub fn set_xattr(&mut self, name: String, value: Vec<u8>) {
+        let xattrs = self.xattrs.get_or_insert_with(Default::default);
+        xattrs.attrs.insert(name, value);
+    }
+    
+    /// Remove extended attribute
+    pub fn remove_xattr(&mut self, name: &str) -> Option<Vec<u8>> {
+        self.xattrs.as_mut()?.attrs.remove(name)
+    }
+    
+    /// List all extended attribute names
+    pub fn list_xattrs(&self) -> Vec<String> {
+        self.xattrs
+            .as_ref()
+            .map(|x| x.attrs.keys().cloned().collect())
+            .unwrap_or_default()
     }
 }
 

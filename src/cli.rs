@@ -231,4 +231,72 @@ pub enum Commands {
         #[arg(short, long)]
         pool: PathBuf,
     },
+    
+    /// Analyze disk fragmentation
+    DefragAnalyze {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
+    
+    /// Start defragmentation process
+    DefragStart {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+        
+        /// Defragmentation intensity (low|medium|high)
+        #[arg(short, long, default_value = "medium")]
+        intensity: String,
+    },
+    
+    /// Stop defragmentation process
+    DefragStop {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
+    
+    /// Show defragmentation status
+    DefragStatus {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
+    
+    /// Execute TRIM/DISCARD operations
+    TrimNow {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+        
+        /// Target disk (optional, trims all if not specified)
+        #[arg(short, long)]
+        disk: Option<PathBuf>,
+    },
+    
+    /// Show TRIM statistics
+    TrimStatus {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
+    
+    /// Set space reclamation policy
+    SetReclamationPolicy {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+        
+        /// Policy (aggressive|balanced|conservative|performance)
+        #[arg(short, long)]
+        policy: String,
+    },
+    
+    /// Show space reclamation status and stats
+    ReclamationStatus {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
 }

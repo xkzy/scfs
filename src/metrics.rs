@@ -32,6 +32,21 @@ pub struct Metrics {
     // Cache metrics
     pub cache_hits: Arc<AtomicU64>,
     pub cache_misses: Arc<AtomicU64>,
+    
+    // Phase 15: Concurrency metrics
+    pub lock_acquisitions: Arc<AtomicU64>,
+    pub lock_contentions: Arc<AtomicU64>,
+    pub group_commits: Arc<AtomicU64>,
+    pub group_commit_ops: Arc<AtomicU64>,
+    pub io_queue_length: Arc<AtomicU64>,
+    pub io_ops_completed: Arc<AtomicU64>,
+    
+    // Phase 12: Defragmentation & TRIM metrics
+    pub defrag_runs_completed: Arc<AtomicU64>,
+    pub defrag_extents_moved: Arc<AtomicU64>,
+    pub defrag_bytes_moved: Arc<AtomicU64>,
+    pub trim_operations: Arc<AtomicU64>,
+    pub trim_bytes_reclaimed: Arc<AtomicU64>,
 }
 
 impl Metrics {
@@ -59,6 +74,21 @@ impl Metrics {
 
             cache_hits: Arc::new(AtomicU64::new(0)),
             cache_misses: Arc::new(AtomicU64::new(0)),
+            
+            // Phase 15: Concurrency metrics
+            lock_acquisitions: Arc::new(AtomicU64::new(0)),
+            lock_contentions: Arc::new(AtomicU64::new(0)),
+            group_commits: Arc::new(AtomicU64::new(0)),
+            group_commit_ops: Arc::new(AtomicU64::new(0)),
+            io_queue_length: Arc::new(AtomicU64::new(0)),
+            io_ops_completed: Arc::new(AtomicU64::new(0)),
+            
+            // Phase 12: Defragmentation & TRIM metrics
+            defrag_runs_completed: Arc::new(AtomicU64::new(0)),
+            defrag_extents_moved: Arc::new(AtomicU64::new(0)),
+            defrag_bytes_moved: Arc::new(AtomicU64::new(0)),
+            trim_operations: Arc::new(AtomicU64::new(0)),
+            trim_bytes_reclaimed: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -103,6 +133,49 @@ impl Metrics {
     pub fn record_cache_miss(&self) {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
     }
+    
+    // Phase 15: Concurrency metric recording
+    
+    pub fn record_lock_acquisition(&self) {
+        self.lock_acquisitions.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    pub fn record_lock_contention(&self) {
+        self.lock_contentions.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    pub fn record_group_commit(&self, ops_count: u64) {
+        self.group_commits.fetch_add(1, Ordering::Relaxed);
+        self.group_commit_ops.fetch_add(ops_count, Ordering::Relaxed);
+    }
+    
+    pub fn update_io_queue_length(&self, length: u64) {
+        self.io_queue_length.store(length, Ordering::Relaxed);
+    }
+    
+    pub fn record_io_op_completed(&self) {
+        self.io_ops_completed.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    /// Get average operations per group commit
+    pub fn avg_group_commit_ops(&self) -> f64 {
+        let commits = self.group_commits.load(Ordering::Relaxed);
+        if commits == 0 {
+            return 0.0;
+        }
+        let ops = self.group_commit_ops.load(Ordering::Relaxed);
+        ops as f64 / commits as f64
+    }
+    
+    /// Get lock contention ratio (contentions / acquisitions)
+    pub fn lock_contention_ratio(&self) -> f64 {
+        let acquisitions = self.lock_acquisitions.load(Ordering::Relaxed);
+        if acquisitions == 0 {
+            return 0.0;
+        }
+        let contentions = self.lock_contentions.load(Ordering::Relaxed);
+        contentions as f64 / acquisitions as f64
+    }
 
     /// Get snapshot of all metrics
     pub fn snapshot(&self) -> MetricsSnapshot {
@@ -125,6 +198,17 @@ impl Metrics {
             scrub_repairs_successful: self.scrub_repairs_successful.load(Ordering::Relaxed),
             cache_hits: self.cache_hits.load(Ordering::Relaxed),
             cache_misses: self.cache_misses.load(Ordering::Relaxed),
+            lock_acquisitions: self.lock_acquisitions.load(Ordering::Relaxed),
+            lock_contentions: self.lock_contentions.load(Ordering::Relaxed),
+            group_commits: self.group_commits.load(Ordering::Relaxed),
+            group_commit_ops: self.group_commit_ops.load(Ordering::Relaxed),
+            io_queue_length: self.io_queue_length.load(Ordering::Relaxed),
+            io_ops_completed: self.io_ops_completed.load(Ordering::Relaxed),
+            defrag_runs_completed: self.defrag_runs_completed.load(Ordering::Relaxed),
+            defrag_extents_moved: self.defrag_extents_moved.load(Ordering::Relaxed),
+            defrag_bytes_moved: self.defrag_bytes_moved.load(Ordering::Relaxed),
+            trim_operations: self.trim_operations.load(Ordering::Relaxed),
+            trim_bytes_reclaimed: self.trim_bytes_reclaimed.load(Ordering::Relaxed),
         }
     }
 }
@@ -156,6 +240,19 @@ pub struct MetricsSnapshot {
     pub scrub_repairs_successful: u64,
     pub cache_hits: u64,
     pub cache_misses: u64,
+    // Phase 15: Concurrency metrics
+    pub lock_acquisitions: u64,
+    pub lock_contentions: u64,
+    pub group_commits: u64,
+    pub group_commit_ops: u64,
+    pub io_queue_length: u64,
+    pub io_ops_completed: u64,
+    // Phase 12: Defragmentation & TRIM metrics
+    pub defrag_runs_completed: u64,
+    pub defrag_extents_moved: u64,
+    pub defrag_bytes_moved: u64,
+    pub trim_operations: u64,
+    pub trim_bytes_reclaimed: u64,
 }
 
 impl MetricsSnapshot {

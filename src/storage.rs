@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use std::sync::{Arc, RwLock};
 
 use crate::disk::Disk;
-use crate::extent::{split_into_extents, Extent, RedundancyPolicy, DEFAULT_EXTENT_SIZE};
+use crate::extent::{split_into_extents, Extent, RedundancyPolicy, AccessStats, AccessClassification, DEFAULT_EXTENT_SIZE};
+use crate::hmm_classifier::HmmClassifier;
 use crate::metadata::{ExtentMap, Inode, MetadataManager};
 use crate::placement::PlacementEngine;
 use crate::redundancy;
@@ -38,6 +39,95 @@ impl StorageEngine {
     
     pub fn metrics(&self) -> Arc<Metrics> {
         self.metrics.clone()
+    }
+    
+    /// Get a reference to the metadata manager
+    pub fn metadata(&self) -> Arc<RwLock<MetadataManager>> {
+        Arc::clone(&self.metadata)
+    }
+    
+    /// Get a copy of the current disk list
+    pub fn get_disks(&self) -> Vec<Disk> {
+        self.disks.read().unwrap().clone()
+    }
+    
+    /// Read extent data by UUID
+    pub fn read_extent(&self, extent_uuid: uuid::Uuid) -> Result<Vec<u8>> {
+        let metadata = self.metadata.read().unwrap();
+        let extent = metadata.load_extent(&extent_uuid)?;
+        drop(metadata);
+        
+        let disks = self.disks.read().unwrap();
+        let fragments = self.read_fragments(&extent, &disks)?;
+        drop(disks);
+        
+        // Reconstruct data from fragments
+        redundancy::decode(&fragments, extent.redundancy)
+    }
+    
+    /// Write extent data and return the extent
+    pub fn write_extent(&self, data: &[u8], policy: RedundancyPolicy) -> Result<Extent> {
+        use uuid::Uuid;
+        use blake3;
+        
+        let extent_uuid = Uuid::new_v4();
+        let checksum_hash = blake3::hash(data);
+        let checksum: [u8; 32] = checksum_hash.into();
+        
+        // Create extent object first
+        let now = chrono::Utc::now().timestamp();
+        let mut extent = Extent {
+            uuid: extent_uuid,
+            size: data.len(),
+            checksum,
+            redundancy: policy,
+            fragment_locations: Vec::new(),
+            previous_policy: None,
+            policy_transitions: Vec::new(),
+            last_policy_change: None,
+            access_stats: AccessStats {
+                read_count: 0,
+                write_count: 1,
+                last_read: 0,
+                last_write: now,
+                created_at: now,
+                classification: AccessClassification::Cold,
+                hmm_classifier: Some(HmmClassifier::new()),
+            },
+            rebuild_in_progress: false,
+            rebuild_progress: None,
+            generation: 0,
+        };
+        
+        // Encode fragments based on redundancy policy
+        let fragments = redundancy::encode(data, policy)?;
+        
+        // Place extent on disks
+        let mut disks = self.disks.write().unwrap();
+        self.placement.place_extent(&mut extent, &mut disks, &fragments)?;
+        
+        // Record metrics
+        for fragment in &fragments {
+            self.metrics.record_disk_write(fragment.len() as u64);
+        }
+        
+        Ok(extent)
+    }
+    
+    /// Delete an extent and its fragments
+    pub fn delete_extent(&self, extent_uuid: uuid::Uuid) -> Result<()> {
+        let metadata = self.metadata.read().unwrap();
+        let extent = metadata.load_extent(&extent_uuid)?;
+        drop(metadata);
+        
+        let mut disks = self.disks.write().unwrap();
+        for location in &extent.fragment_locations {
+            if let Some(disk) = disks.iter_mut().find(|d| d.uuid == location.disk_uuid) {
+                let _ = disk.delete_fragment(&extent_uuid, location.fragment_index);
+            }
+        }
+        
+        Ok(())
     }
 
     /// Perform mount-time rebuild: scan extents and rebuild missing fragments where possible

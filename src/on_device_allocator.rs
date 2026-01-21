@@ -98,6 +98,7 @@ impl Superblock {
 }
 
 /// Minimal on-device allocator scaffold.
+#[derive(Debug, Clone)]
 pub struct OnDeviceAllocator {
     device_path: PathBuf,
     superblock_offset: u64,
@@ -229,14 +230,22 @@ impl OnDeviceAllocator {
         let unit_size = 1024 * 1024; // placeholder default 1MiB
         let total_units = (sb.allocator_len as u64) * 8;
 
-        Ok(OnDeviceAllocator {
+        let mut oda = OnDeviceAllocator {
             device_path: path.to_path_buf(),
             superblock_offset: 0,
             unit_size,
             total_units,
             bitmap,
             allocator_offset: sb.allocator_offset,
-        })
+        };
+
+        // Run quick reconciliation to ensure bitmap reflects present fragments
+        let changed = oda.reconcile_and_persist()?;
+        if changed {
+            log::info!("On-device allocator reconciled and persisted changes for {}", path.display());
+        }
+
+        Ok(oda)
     }
 
     /// Persist bitmap to device and bump superblock seq
@@ -365,4 +374,49 @@ impl OnDeviceAllocator {
         }
         c
     }
+
+    /// Scan data region for valid fragment headers and ensure bitmap marks used units.
+    /// Returns true if bitmap was changed and persisted.
+    pub fn reconcile_and_persist(&mut self) -> Result<bool> {
+        let mut changed = false;
+        let base = self.data_region_base();
+        let mut f = OpenOptions::new().read(true).open(&self.device_path).context("Failed to open device during reconcile")?;
+        for unit in 0..self.total_units {
+            let offset = base + unit * self.unit_size;
+            let mut hbuf = vec![0u8; 16+4+8+32+4];
+            if let Ok(_) = f.seek(SeekFrom::Start(offset)).and_then(|_| f.read_exact(&mut hbuf)) {
+                if let Ok(hdr) = FragmentHeader::from_bytes(&hbuf) {
+                    // header valid; check data checksum by reading exact data length
+                    let data_len = hdr.total_length as usize;
+                    // avoid reading huge data in reconcile; ensure within unit bounds
+                    if data_len > (self.unit_size as usize) * 1024 { // safety cap
+                        continue;
+                    }
+                    let mut data = vec![0u8; data_len];
+                    if f.read_exact(&mut data).is_ok() {
+                        let ch = blake3::hash(&data);
+                        if ch.as_bytes() == &hdr.data_checksum {
+                            // header + data valid - mark the units that correspond to this fragment
+                            let fragment_total = ((data_len + (16+4+8+32+4) + self.unit_size as usize -1) / self.unit_size as usize) as u64;
+                            for u in unit..(unit + fragment_total) {
+                                let idx = (u / 8) as usize;
+                                let b = 1u8 << (u % 8);
+                                if (self.bitmap[idx] & b) == 0 {
+                                    self.bitmap[idx] |= b;
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if changed {
+            self.persist()?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
 }
+

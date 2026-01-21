@@ -63,3 +63,41 @@ fn test_ondevice_allocator_alloc_persist() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_reconcile_detects_unpersisted_fragment() -> Result<()> {
+    let tmp = NamedTempFile::new()?;
+    let path = tmp.path().to_path_buf();
+    let uuid = Uuid::new_v4();
+    let device_size = 256 * 1024u64;
+    let unit_size = 4096u64;
+    let total_units = 64u64;
+
+    OnDeviceAllocator::format_device(&path, uuid, device_size, unit_size, total_units)?;
+
+    // Manually write a fragment at unit 0 without updating bitmap / superblock
+    let mut f = OpenOptions::new().read(true).write(true).open(&path)?;
+    let mut oda = OnDeviceAllocator::load_from_device(&path)?;
+    let start_unit = 0u64;
+    let data = vec![9u8; 500];
+    let ch = blake3::hash(&data);
+    let hdr = FragmentHeader { extent_uuid: Uuid::new_v4(), fragment_index: 0, total_length: data.len() as u64, data_checksum: *ch.as_bytes() };
+
+    let mut payload = hdr.to_bytes();
+    payload.extend_from_slice(&data);
+    let total_write = ((payload.len() as u64 + unit_size -1) / unit_size) * unit_size;
+    payload.resize(total_write as usize, 0u8);
+
+    let offset = oda.data_region_base() + start_unit * oda.unit_size;
+    f.seek(SeekFrom::Start(offset))?;
+    f.write_all(&payload)?;
+    f.sync_all()?;
+    drop(f);
+
+    // Now reload - load_from_device runs reconcile_and_persist and should detect the fragment and mark bits
+    let oda2 = OnDeviceAllocator::load_from_device(&path)?;
+    // free_count should be less than total_units now
+    assert!(oda2.free_count() < total_units);
+
+    Ok(())
+}

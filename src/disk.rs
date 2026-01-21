@@ -25,6 +25,9 @@ pub struct Disk {
     pub allocator: Option<crate::allocator::BitmapAllocator>,
     #[serde(skip)]
     pub free_index: Option<crate::free_extent::FreeExtentIndex>,
+    #[serde(skip)]
+    /// On-device allocator (for block devices)
+    pub on_device_allocator: Option<crate::on_device_allocator::OnDeviceAllocator>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -101,6 +104,7 @@ impl Disk {
             kind: DiskKind::Directory,
             allocator: None,
             free_index: None,
+            on_device_allocator: None,
         };
 
         // Initialize allocator and free-index for directory-backed disk
@@ -115,16 +119,27 @@ impl Disk {
         let uuid = Uuid::new_v4();
         let capacity_bytes = Self::get_block_device_size(&path)?;
 
-        let disk = Disk {
+        let mut disk = Disk {
             uuid,
-            path,
+            path: path.clone(),
             capacity_bytes,
             used_bytes: 0,
             health: DiskHealth::Healthy,
             kind: DiskKind::BlockDevice,
             allocator: None,
             free_index: None,
+            on_device_allocator: None,
         };
+
+        // Try loading on-device allocator if present (non-fatal)
+        match crate::on_device_allocator::OnDeviceAllocator::load_from_device(&path) {
+            Ok(oda) => {
+                disk.on_device_allocator = Some(oda);
+            }
+            Err(_) => {
+                // Device may be unformatted for on-device allocator; defer until explicitly formatted
+            }
+        }
 
         disk.save()?;
         Ok(disk)
@@ -145,6 +160,13 @@ impl Disk {
         // If directory-backed, attempt to load allocator and free-index
         if disk.kind == DiskKind::Directory {
             let _ = disk.init_allocator_and_index();
+        }
+
+        // If block-device, attempt to attach on-device allocator (non-fatal)
+        if disk.kind == DiskKind::BlockDevice {
+            if let Ok(oda) = crate::on_device_allocator::OnDeviceAllocator::load_from_device(&disk.path) {
+                disk.on_device_allocator = Some(oda);
+            }
         }
 
         Ok(disk)
@@ -291,11 +313,45 @@ impl Disk {
         fragment_index: usize,
         data: &[u8],
     ) -> Result<()> {
-        // For now, block device backed disks cannot accept fragment writes
+        // Handle block device backed disks using on-device allocator when available
         if self.kind == DiskKind::BlockDevice {
-            return Err(anyhow!("Writes to raw block devices are not yet supported (allocator not implemented)."));
+            if let Some(oda) = &mut self.on_device_allocator {
+                // Prepare fragment header
+                let ch = blake3::hash(&data);
+                let hdr = crate::on_device_allocator::FragmentHeader {
+                    extent_uuid: *extent_uuid,
+                    fragment_index: fragment_index as u32,
+                    total_length: data.len() as u64,
+                    data_checksum: *ch.as_bytes(),
+                };
+
+                // units required
+                let n_units = ((hdr.total_length + (16+4+8+32+4) as u64) + oda.unit_size - 1) / oda.unit_size;
+                let start = oda.allocate_contiguous(n_units).ok_or_else(|| anyhow!("Failed to allocate on-device space"))?;
+
+                #[cfg(test)]
+                check_crash_point(CrashPoint::BeforeFragmentWrite)?;
+
+                oda.write_fragment_at(start, data, &hdr)?;
+
+                #[cfg(test)]
+                check_crash_point(CrashPoint::AfterFragmentWrite)?;
+
+                // verify readback
+                let (_rh, rd) = oda.read_fragment_at(start)?;
+                if rd != data {
+                    anyhow::bail!("Fragment verification failed on device");
+                }
+
+                self.used_bytes += data.len() as u64;
+                self.save()?;
+                return Ok(());
+            } else {
+                return Err(anyhow!("Block device missing on-device allocator (not formatted)"));
+            }
         }
 
+        // Regular directory-backed behavior
         let fragment_path = self.fragment_path(extent_uuid, fragment_index);
         
         #[cfg(test)]

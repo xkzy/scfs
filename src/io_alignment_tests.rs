@@ -120,3 +120,23 @@ fn test_pread_pwrite_direct() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_write_aligned_preserves_file_length() -> Result<()> {
+    let tmp = NamedTempFile::new()?;
+    let path = tmp.path().to_path_buf();
+
+    let data = vec![42u8; 5000];
+    crate::io_alignment::write_aligned_file(&path, &data, true)?;
+
+    // Ensure the on-disk file length equals the original data length (no alignment padding left behind)
+    let meta = std::fs::metadata(&path)?;
+    assert_eq!(meta.len() as usize, data.len());
+
+    // Also verify content matches exactly
+    let read_back = std::fs::read(&path)?;
+    assert_eq!(read_back.len(), data.len());
+    assert_eq!(read_back, data);
+
+    Ok(())
+}

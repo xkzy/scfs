@@ -206,7 +206,7 @@ pub fn detect_alignment_from_path(path: &Path) -> Result<usize> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::FileTypeExt;
-            if fs::metadata(path)?.file_type().is_block_device() {
+            if std::fs::metadata(path)?.file_type().is_block_device() {
                 use std::os::unix::io::AsRawFd;
                 let f = File::open(path)?;
                 let fd = f.as_raw_fd();
@@ -254,12 +254,17 @@ pub fn write_aligned_file(path: &Path, data: &[u8], prefer_direct: bool) -> Resu
     let use_direct = prefer_direct && open_with_o_direct(path).is_ok();
 
     if use_direct {
-        let f = open_with_o_direct(path)?;
+        let mut f = open_with_o_direct(path)?;
         let fd = f.as_raw_fd();
         let wrote = pwrite_direct(fd, &buf, 0)?;
         if wrote != write_size {
             anyhow::bail!("short write for direct I/O: {} != {}", wrote, write_size);
         }
+        // Trim the file to the actual data length to match behavior of buffered writes
+        f.set_len(data.len() as u64)
+            .context("Failed to truncate direct-written file to data length")?;
+        // Ensure metadata and truncation are persisted
+        f.sync_all()?;
         Ok(())
     } else {
         // Fallback to normal write

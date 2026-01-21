@@ -395,14 +395,24 @@ impl TrimEngine {
 
         let mut file = File::options().write(true).open(path)?;
         
-        // Overwrite with zeros
-        let chunk_size = 1024 * 1024; // 1MB chunks
-        let zeros = vec![0u8; chunk_size];
+        // Overwrite with zeros in alignment-aware way
+        let chunk_size = 1024 * 1024; // 1MB nominal chunk
         let mut remaining = size;
 
+        // Try using aligned direct writes where possible (falls back internally)
         while remaining > 0 {
             let to_write = remaining.min(chunk_size as u64) as usize;
-            file.write_all(&zeros[..to_write])?;
+            let zeros = vec![0u8; to_write];
+            match crate::io_alignment::write_aligned_file(path, &zeros, true) {
+                Ok(_) => {
+                    // written via aligned direct (or fallback)
+                }
+                Err(e) => {
+                    // If direct aligned fails for some reason, do buffered writes
+                    log::warn!("aligned secure erase failed for {:?}: {}. falling back to buffered.", path, e);
+                    file.write_all(&zeros)?;
+                }
+            }
             remaining -= to_write as u64;
         }
 

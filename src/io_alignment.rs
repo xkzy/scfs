@@ -2,12 +2,13 @@
 
 use anyhow::{Context, Result};
 use std::ffi::c_void;
-use std::fs::OpenOptions;
-use std::io;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::Path;
 use std::ptr;
+use nix::sys::statvfs;
 
 /// Simple RAII wrapper for aligned memory allocated via posix_memalign
 pub struct AlignedBuf {
@@ -129,7 +130,8 @@ pub fn pwrite_direct(fd: RawFd, buf: &AlignedBuf, offset: u64) -> Result<usize> 
 
     let mut written = 0usize;
     let mut to_write = buf.len();
-    let mut ptr = buf.as_mut_ptr() as *const libc::c_void;
+    // Use immutable pointer for pwrite
+    let mut ptr = buf.as_ptr() as *const libc::c_void;
     let mut off = offset as libc::off_t;
 
     while to_write > 0 {
@@ -194,4 +196,103 @@ pub fn pread_direct(fd: RawFd, buf: &mut AlignedBuf, offset: u64) -> Result<usiz
     }
 
     Ok(read)
+}
+
+/// Detect the required alignment (in bytes) for I/O on `path`.
+/// For block devices, use BLKSSZGET (sector size). For regular files, use filesystem block size.
+pub fn detect_alignment_from_path(path: &Path) -> Result<usize> {
+    // If path exists and is block device, query block device sector size
+    if path.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            if fs::metadata(path)?.file_type().is_block_device() {
+                use std::os::unix::io::AsRawFd;
+                let f = File::open(path)?;
+                let fd = f.as_raw_fd();
+                // BLKSSZGET ioctl
+                let mut sector_size: libc::c_uint = 0;
+                const BLKSSZGET: libc::c_ulong = 0x1268;
+                let ret = unsafe { libc::ioctl(fd, BLKSSZGET as _, &mut sector_size) };
+                if ret == 0 && sector_size > 0 {
+                    return Ok(sector_size as usize);
+                }
+            }
+        }
+    }
+
+    // Fallback: use statvfs block size for the filesystem containing path
+    let dir = if path.exists() {
+        if path.is_file() { path.parent().unwrap_or(path) } else { path }
+    } else {
+        path.parent().unwrap_or(path)
+    };
+
+    let stat = statvfs::statvfs(dir).context("statvfs failed")?;
+    let bsize = stat.block_size();
+    Ok(bsize as usize)
+}
+
+/// Write `data` to `path` using aligned buffer and O_DIRECT if possible. If `prefer_direct` is true
+/// try to open with O_DIRECT and fall back as needed. Pads short writes up to alignment.
+pub fn write_aligned_file(path: &Path, data: &[u8], prefer_direct: bool) -> Result<()> {
+    let align = detect_alignment_from_path(path)?;
+    // Determine write size: round up to multiple of alignment
+    let mut write_size = data.len();
+    if write_size % align != 0 {
+        write_size += align - (write_size % align);
+    }
+
+    let mut buf = AlignedBuf::new(write_size, align)?;
+    // Copy data and zero the rest
+    buf.as_mut_slice()[..data.len()].copy_from_slice(data);
+    for b in &mut buf.as_mut_slice()[data.len()..] {
+        *b = 0;
+    }
+
+    // Try direct open if requested
+    let use_direct = prefer_direct && open_with_o_direct(path).is_ok();
+
+    if use_direct {
+        let f = open_with_o_direct(path)?;
+        let fd = f.as_raw_fd();
+        let wrote = pwrite_direct(fd, &buf, 0)?;
+        if wrote != write_size {
+            anyhow::bail!("short write for direct I/O: {} != {}", wrote, write_size);
+        }
+        Ok(())
+    } else {
+        // Fallback to normal write
+        let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
+        f.write_all(&buf.as_slice()[..data.len()])?;
+        f.sync_all()?;
+        Ok(())
+    }
+}
+
+/// Read `len` bytes from `path` into a Vec<u8>, using aligned reads when prefer_direct is true.
+pub fn read_aligned_file(path: &Path, len: usize, prefer_direct: bool) -> Result<Vec<u8>> {
+    let align = detect_alignment_from_path(path)?;
+    let mut read_size = len;
+    if read_size % align != 0 {
+        read_size += align - (read_size % align);
+    }
+
+    let mut buf = AlignedBuf::new(read_size, align)?;
+    // Try direct if available
+    let use_direct = prefer_direct && open_with_o_direct(path).is_ok();
+
+    if use_direct {
+        let f = open_with_o_direct(path)?;
+        let fd = f.as_raw_fd();
+        let read = pread_direct(fd, &mut buf, 0)?;
+        let mut out = vec![0u8; len];
+        out[..std::cmp::min(len, read)].copy_from_slice(&buf.as_slice()[..std::cmp::min(len, read)]);
+        Ok(out)
+    } else {
+        let mut f = File::open(path)?;
+        let mut out = vec![0u8; len];
+        f.read_exact(&mut out)?;
+        Ok(out)
+    }
 }

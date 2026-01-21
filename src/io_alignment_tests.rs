@@ -24,6 +24,31 @@ fn test_alloc_aligned() -> Result<()> {
 }
 
 #[test]
+fn test_secure_erase_aligned() -> Result<()> {
+    use crate::trim::TrimEngine;
+
+    let tmp = NamedTempFile::new()?;
+    let path = tmp.path().to_path_buf();
+
+    // Fill file with non-zero content
+    let mut f = std::fs::File::create(&path)?;
+    let data = vec![0xABu8; 2 * 1024 * 1024]; // 2MB
+    f.write_all(&data)?;
+    f.sync_all()?;
+    drop(f);
+
+    // Run secure erase (should prefer aligned writes)
+    TrimEngine::secure_erase_file(&path)?;
+
+    // Read back and verify zeroed
+    let mut buf = vec![0u8; data.len()];
+    std::fs::File::open(&path)?.read_exact(&mut buf)?;
+    assert!(buf.iter().all(|&b| b == 0));
+
+    Ok(())
+}
+
+#[test]
 fn test_open_o_direct_flag() -> Result<()> {
     let tmp = NamedTempFile::new()?;
     let path = tmp.path().to_path_buf();
@@ -86,6 +111,12 @@ fn test_pread_pwrite_direct() -> Result<()> {
     // Misaligned offset should error
     let mis = crate::io_alignment::pwrite_direct(fd, &wbuf, 1);
     assert!(mis.is_err());
+
+    // Test the high-level write/read wrapper (prefer direct but allow fallback)
+    let data = vec![42u8; 5000];
+    crate::io_alignment::write_aligned_file(&path, &data, true)?;
+    let read_back = crate::io_alignment::read_aligned_file(&path, data.len(), true)?;
+    assert_eq!(read_back, data);
 
     Ok(())
 }

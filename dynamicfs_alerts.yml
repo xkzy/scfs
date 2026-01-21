@@ -1,0 +1,202 @@
+# Prometheus Alerting Rules for DynamicFS
+# 
+# Add this file to your Prometheus configuration:
+# rule_files:
+#   - "dynamicfs_alerts.yml"
+
+groups:
+  - name: dynamicfs_critical
+    interval: 30s
+    rules:
+      # Critical: Unrecoverable data loss
+      - alert: DynamicFSUnrecoverableExtents
+        expr: dynamicfs_extents_unrecoverable > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DynamicFS has unrecoverable extents (data loss)"
+          description: "{{ $value }} extents cannot be recovered. Immediate action required."
+          
+      # Critical: Multiple disk failures
+      - alert: DynamicFSMultipleDiskFailures
+        expr: dynamicfs_disk_errors_total > 3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Multiple disk failures detected"
+          description: "{{ $value }} disks have experienced errors. System redundancy at risk."
+
+  - name: dynamicfs_warnings
+    interval: 60s
+    rules:
+      # Warning: Degraded extents
+      - alert: DynamicFSDegradedExtents
+        expr: dynamicfs_extents_degraded > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DynamicFS has degraded extents"
+          description: "{{ $value }} extents are degraded. Rebuild recommended."
+          
+      # Warning: High scrub error rate
+      - alert: DynamicFSHighScrubErrors
+        expr: rate(dynamicfs_scrub_issues_found[5m]) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High scrub error rate detected"
+          description: "Scrubbing is finding errors at {{ $value }} per second. Check disk health."
+          
+      # Warning: Low repair success rate
+      - alert: DynamicFSLowRepairSuccessRate
+        expr: |
+          (
+            rate(dynamicfs_scrub_repairs_successful[10m]) 
+            / 
+            rate(dynamicfs_scrub_repairs_attempted[10m])
+          ) < 0.8
+        for: 20m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low repair success rate"
+          description: "Only {{ $value | humanizePercentage }} of repairs are succeeding."
+
+  - name: dynamicfs_capacity
+    interval: 300s
+    rules:
+      # Warning: High disk utilization
+      - alert: DynamicFSHighDiskUtilization
+        expr: |
+          (
+            dynamicfs_disk_write_bytes 
+            / 
+            (dynamicfs_disk_write_bytes + 10737418240)
+          ) > 0.85
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk utilization"
+          description: "Disk space is {{ $value | humanizePercentage }} full. Consider adding capacity."
+          
+      # Info: Approaching capacity
+      - alert: DynamicFSApproachingCapacity
+        expr: |
+          (
+            dynamicfs_disk_write_bytes 
+            / 
+            (dynamicfs_disk_write_bytes + 10737418240)
+          ) > 0.75
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Approaching capacity limit"
+          description: "Disk space is {{ $value | humanizePercentage }} full. Plan for expansion."
+
+  - name: dynamicfs_performance
+    interval: 60s
+    rules:
+      # Warning: Cache hit rate degradation
+      - alert: DynamicFSLowCacheHitRate
+        expr: |
+          (
+            rate(dynamicfs_cache_hits[5m]) 
+            / 
+            (rate(dynamicfs_cache_hits[5m]) + rate(dynamicfs_cache_misses[5m]))
+          ) < 0.5
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache hit rate is {{ $value | humanizePercentage }}. Consider tuning cache size."
+          
+      # Info: High rebuild activity
+      - alert: DynamicFSHighRebuildActivity
+        expr: rate(dynamicfs_rebuilds_attempted[5m]) > 0.1
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "High rebuild activity"
+          description: "System is performing {{ $value }} rebuilds per second."
+
+  - name: dynamicfs_scrubbing
+    interval: 300s
+    rules:
+      # Warning: Scrubber not running
+      - alert: DynamicFSScrubbingNotActive
+        expr: |
+          (time() - dynamicfs_scrubs_completed) > 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Background scrubbing is not active"
+          description: "No scrub has completed in the last 24 hours. Data integrity at risk."
+          
+      # Info: Scrub completion
+      - alert: DynamicFSScrubCompleted
+        expr: |
+          (time() - dynamicfs_scrubs_completed) < 300
+        labels:
+          severity: info
+        annotations:
+          summary: "Scrub completed successfully"
+          description: "Background scrub finished. Issues found: {{ $value }}"
+
+  - name: dynamicfs_health
+    interval: 60s
+    rules:
+      # Critical: System down
+      - alert: DynamicFSDown
+        expr: up{job="dynamicfs"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DynamicFS is down"
+          description: "Cannot scrape metrics from DynamicFS. Service may be down."
+          
+      # Warning: Metrics endpoint slow
+      - alert: DynamicFSMetricsEndpointSlow
+        expr: |
+          rate(up{job="dynamicfs"}[1m]) < 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DynamicFS metrics endpoint is slow or flapping"
+          description: "Metrics scrape success rate is {{ $value | humanizePercentage }}."
+
+# Dashboard Queries
+#
+# Use these queries in Grafana dashboards:
+#
+# Overall Health:
+#   - dynamicfs_extents_healthy / (dynamicfs_extents_healthy + dynamicfs_extents_degraded + dynamicfs_extents_unrecoverable)
+#
+# Disk Health:
+#   - dynamicfs_disk_errors_total
+#   - rate(dynamicfs_disk_reads_total[5m])
+#   - rate(dynamicfs_disk_writes_total[5m])
+#
+# Scrubbing Activity:
+#   - rate(dynamicfs_scrubs_completed[1h])
+#   - dynamicfs_scrub_issues_found
+#   - dynamicfs_scrub_repairs_successful / dynamicfs_scrub_repairs_attempted
+#
+# Performance:
+#   - dynamicfs_cache_hits / (dynamicfs_cache_hits + dynamicfs_cache_misses)
+#   - dynamicfs_disk_iops_total
+#   - rate(dynamicfs_disk_read_bytes[5m]) + rate(dynamicfs_disk_write_bytes[5m])
+#
+# Capacity:
+#   - dynamicfs_disk_write_bytes
+#   - (dynamicfs_disk_write_bytes / (dynamicfs_disk_write_bytes + 10737418240)) * 100

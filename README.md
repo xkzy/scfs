@@ -22,6 +22,9 @@ A minimal, working, single-node filesystem prototype with dynamic geometry, supp
 ✓ **Lazy Rebuild** - Per-extent reconstruction on demand, not global rebuild
 ✓ **Crash Consistent** - Atomic metadata updates with checksums
 ✓ **POSIX Semantics** - Standard filesystem via FUSE
+✓ **Background Scrubbing** - Continuous low-priority verification daemon with configurable intensity
+✓ **Prometheus Metrics** - HTTP endpoint for monitoring and observability
+✓ **Structured Logging** - JSON-formatted logs with request tracing
 
 ## 🚀 Quick Start
 
@@ -228,6 +231,30 @@ cargo run --release -- policy-status --pool /tmp/pool
 cargo run --release -- list-hot --pool /tmp/pool
 cargo run --release -- list-cold --pool /tmp/pool
 cargo run --release -- extent-stats --pool /tmp/pool --extent <UUID>
+
+# Scrubbing & Maintenance
+cargo run --release -- scrub --pool /tmp/pool  # One-time scrub
+cargo run --release -- scrub --pool /tmp/pool --repair  # With auto-repair
+
+# Background Scrub Daemon
+cargo run --release -- scrub-daemon start --pool /tmp/pool --intensity low
+cargo run --release -- scrub-daemon status --pool /tmp/pool
+cargo run --release -- scrub-daemon pause --pool /tmp/pool
+cargo run --release -- scrub-daemon resume --pool /tmp/pool
+cargo run --release -- scrub-daemon stop --pool /tmp/pool
+
+# Schedule Periodic Scrubbing
+cargo run --release -- scrub-schedule --pool /tmp/pool --frequency nightly --intensity low
+cargo run --release -- scrub-schedule --pool /tmp/pool --frequency continuous --intensity medium
+
+# Observability & Monitoring
+cargo run --release -- status --pool /tmp/pool  # Overall health
+cargo run --release -- health --pool /tmp/pool  # Detailed diagnostics
+cargo run --release -- metrics --pool /tmp/pool  # System metrics
+
+# Prometheus Metrics Server
+cargo run --release -- metrics-server --pool /tmp/pool --port 9090
+# Endpoints: http://localhost:9090/metrics (Prometheus) and /health (JSON)
 
 # Mount
 cargo run --release -- mount --pool /tmp/pool --mountpoint /tmp/mnt

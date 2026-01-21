@@ -185,6 +185,50 @@ pub enum Commands {
         repair: bool,
     },
 
+    /// Control background scrub daemon
+    ScrubDaemon {
+        #[command(subcommand)]
+        action: ScrubDaemonAction,
+    },
+
+    /// Schedule periodic scrubbing
+    ScrubSchedule {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+
+        /// Schedule frequency (nightly, continuous, manual)
+        #[arg(short, long, default_value = "nightly")]
+        frequency: String,
+
+        /// Scrub intensity (low, medium, high)
+        #[arg(short, long, default_value = "low")]
+        intensity: String,
+
+        /// Dry run mode
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
+
+        /// Auto repair detected issues
+        #[arg(long, default_value = "true")]
+        auto_repair: bool,
+    },
+
+    /// Start Prometheus metrics server
+    MetricsServer {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+
+        /// Port to listen on
+        #[arg(long, default_value = "9090")]
+        port: u16,
+
+        /// Bind address
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+    },
+
     /// Show filesystem status and health
     Status {
         /// Pool directory
@@ -298,5 +342,62 @@ pub enum Commands {
         /// Pool directory
         #[arg(short, long)]
         pool: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScrubDaemonAction {
+    /// Start the background scrub daemon
+    Start {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+
+        /// Scrub intensity (low, medium, high)
+        #[arg(short, long, default_value = "low")]
+        intensity: String,
+
+        /// Dry run mode (don't actually repair)
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
+    },
+
+    /// Stop the background scrub daemon
+    Stop {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
+
+    /// Show scrub daemon status
+    Status {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
+
+    /// Pause the scrub daemon
+    Pause {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
+
+    /// Resume the scrub daemon
+    Resume {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+    },
+
+    /// Change scrub intensity
+    SetIntensity {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+
+        /// New intensity level (low, medium, high)
+        #[arg(short, long)]
+        intensity: String,
     },
 }

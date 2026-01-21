@@ -9,6 +9,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Control Direct I/O behavior: auto|always|never
+    #[arg(long, global = true, default_value = "auto")]
+    pub direct_io: String,
+
     #[command(subcommand)]
     pub command: Commands,
 }

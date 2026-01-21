@@ -9,6 +9,8 @@ Scope
 - Support device-aware I/O semantics: O_DIRECT (or O_SYNC fallback), TRIM support, alignment-aware reads/writes.
 - Implement an on-device layout (superblock + allocator) for storing fragments by offset.
 - Provide explicit CLI safety controls (`--device`, `--force`) and safety checks (device signature detection, exclusive lock).
+
+CLI: Add a global `--direct-io <auto|always|never>` flag to control whether the system prefers O_DIRECT aligned I/O (also available via `DYNAMICFS_DIRECT_IO` environment variable).
 - Integration tests using loopback devices and crash-safety scenarios.
 
 Milestones

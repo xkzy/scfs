@@ -304,12 +304,17 @@ impl Disk {
          let temp_path = fragment_path.with_extension("frag.tmp");
          let mut guard = TempFragmentGuard::new(temp_path.clone());
          {
-             let mut file = File::create(&temp_path)
-                 .context("Failed to open temp fragment file")?;
-             file.write_all(data)
-                 .context("Failed to write fragment")?;
-             file.sync_all()
-                 .context("Failed to fsync fragment data")?;
+             // Use alignment-aware write (prefer direct when available)
+             if let Err(e) = crate::io_alignment::write_aligned_file(&temp_path, data, true) {
+                 // Fallback to buffered write if aligned/direct write fails
+                 let mut file = File::create(&temp_path)
+                     .context("Failed to open temp fragment file")?;
+                 file.write_all(data)
+                     .context("Failed to write fragment")?;
+                 file.sync_all()
+                     .context("Failed to fsync fragment data")?;
+                 log::warn!("Aligned write failed for {}: {}. used buffered write.", temp_path.display(), e);
+             }
          }
          
          #[cfg(test)]
@@ -319,6 +324,7 @@ impl Disk {
              .context("Failed to commit fragment")?;
          guard.commit();
 
+         // Verify readback
          let written = fs::read(&fragment_path)
              .context("Failed to verify fragment readback")?;
          if written != data {

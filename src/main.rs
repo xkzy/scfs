@@ -59,6 +59,8 @@ fn main() -> Result<()> {
     
     let cli = Cli::parse();
     let json_output = cli.json;
+    // Set a global override for direct I/O preference; commands and modules can read this env var
+    std::env::set_var("DYNAMICFS_DIRECT_IO", &cli.direct_io);
     
     match cli.command {
         Commands::Init { pool } => cmd_init(&pool, json_output),

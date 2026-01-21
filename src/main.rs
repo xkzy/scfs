@@ -4,6 +4,7 @@ mod crash_sim;
 mod diagnostics;
 mod disk;
 mod allocator;
+mod on_device_allocator;
 mod free_extent;
 mod metadata_btree;
 mod file_locks;

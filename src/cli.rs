@@ -39,19 +39,23 @@ pub enum Commands {
         /// Add a raw block device (explicit confirmation required)
         #[arg(long, default_value_t = false)]
         device: bool,
+
+        /// Force adding device even if it appears to be previously formatted
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
-    
+
     /// Remove a disk from the pool
     RemoveDisk {
         /// Pool directory
         #[arg(short, long)]
         pool: PathBuf,
-        
+
         /// Disk directory
         #[arg(short, long)]
         disk: PathBuf,
     },
-    
+
     /// List all disks in the pool
     ListDisks {
         /// Pool directory

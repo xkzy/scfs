@@ -4,7 +4,7 @@ use uuid::Uuid;
 use std::fs::OpenOptions;
 use std::io::Write;
 
-use crate::on_device_allocator::{OnDeviceAllocator, Superblock, SUPERBLOCK_SIZE};
+use crate::on_device_allocator::{OnDeviceAllocator, Superblock, SUPERBLOCK_SIZE, FragmentHeader};
 
 #[test]
 fn test_superblock_roundtrip() -> Result<()> {
@@ -48,5 +48,18 @@ fn test_ondevice_allocator_alloc_persist() -> Result<()> {
     // reload and ensure allocation persisted
     let alloc2 = OnDeviceAllocator::load_from_device(&path)?;
     assert_eq!(alloc2.free_count(), alloc.free_count());
+
+    // Test write/read fragment
+    let mut alloc3 = OnDeviceAllocator::load_from_device(&path)?;
+    let start = alloc3.allocate_contiguous(2).expect("alloc 2 units");
+    let data = vec![1u8,2,3,4,5,6,7,8,9];
+    let ch = blake3::hash(&data);
+    let hdr = FragmentHeader { extent_uuid: Uuid::new_v4(), fragment_index: 0, total_length: data.len() as u64, data_checksum: *ch.as_bytes() };
+    alloc3.write_fragment_at(start, &data, &hdr)?;
+
+    let (rh, rd) = alloc3.read_fragment_at(start)?;
+    assert_eq!(rh.fragment_index, hdr.fragment_index);
+    assert_eq!(rd, data);
+
     Ok(())
 }

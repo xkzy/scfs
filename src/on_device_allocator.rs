@@ -2,8 +2,11 @@ use anyhow::{anyhow, Context, Result};
 use blake3::Hasher;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+use crc32fast;
+use nix::fcntl::{flock, FlockArg};
 
 const SUPERBLOCK_MAGIC: &[u8; 8] = b"DFSBLOCK";
 const SUPERBLOCK_VERSION: u32 = 1;
@@ -105,7 +108,80 @@ pub struct OnDeviceAllocator {
     allocator_offset: u64,
 }
 
+/// Guard that holds an exclusive lock on a device. Releases the lock when dropped.
+pub struct DeviceLock {
+    file: File,
+}
+
+impl Drop for DeviceLock {
+    fn drop(&mut self) {
+        use nix::fcntl::{flock, FlockArg};
+        let _ = flock(self.file.as_raw_fd(), FlockArg::Unlock);
+    }
+}
+
+/// Fragment header stored before each fragment on-device
+pub struct FragmentHeader {
+    pub extent_uuid: Uuid,
+    pub fragment_index: u32,
+    pub total_length: u64,
+    pub data_checksum: [u8; 32],
+}
+
+impl FragmentHeader {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(16 + 4 + 8 + 32 + 4);
+        buf.extend_from_slice(self.extent_uuid.as_bytes());
+        buf.extend_from_slice(&self.fragment_index.to_le_bytes());
+        buf.extend_from_slice(&self.total_length.to_le_bytes());
+        buf.extend_from_slice(&self.data_checksum);
+        // header checksum (crc32 little-endian)
+        let crc = crc32fast::hash(&buf);
+        buf.extend_from_slice(&crc.to_le_bytes());
+        buf
+    }
+
+    pub fn from_bytes(buf: &[u8]) -> Result<Self> {
+        if buf.len() < (16 + 4 + 8 + 32 + 4) {
+            anyhow::bail!("buffer too small for fragment header");
+        }
+        let uuid = Uuid::from_bytes(buf[0..16].try_into().unwrap());
+        let fragment_index = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+        let total_length = u64::from_le_bytes(buf[20..28].try_into().unwrap());
+        let mut data_checksum = [0u8; 32];
+        data_checksum.copy_from_slice(&buf[28..60]);
+        let stored_crc = u32::from_le_bytes(buf[60..64].try_into().unwrap());
+        let crc = crc32fast::hash(&buf[0..60]);
+        if crc != stored_crc {
+            anyhow::bail!("fragment header checksum mismatch");
+        }
+        Ok(FragmentHeader { extent_uuid: uuid, fragment_index, total_length, data_checksum })
+    }
+}
+
 impl OnDeviceAllocator {
+    /// Check whether a valid superblock exists on `path` (useful to detect pre-existing device data)
+    pub fn has_superblock(path: &Path) -> bool {
+        if let Ok(mut f) = OpenOptions::new().read(true).open(path) {
+            let mut buf = vec![0u8; SUPERBLOCK_SIZE];
+            if f.read_exact(&mut buf).is_ok() {
+                return &buf[0..8] == SUPERBLOCK_MAGIC;
+            }
+        }
+        false
+    }
+
+    /// Acquire exclusive flock on device path. Returns a guard that releases the lock on Drop.
+    pub fn acquire_device_lock(path: &Path) -> Result<DeviceLock> {
+        use std::os::unix::io::AsRawFd;
+        use nix::fcntl::{flock, FlockArg};
+
+        let file = OpenOptions::new().read(true).write(true).open(path).context("Failed to open device for locking")?;
+        let fd = file.as_raw_fd();
+        flock(fd, FlockArg::LockExclusiveNonblock).context("Failed to acquire exclusive lock on device (is it in use?)")?;
+        Ok(DeviceLock { file })
+    }
+
     /// Format the device with a superblock and empty bitmap allocator.
     /// `device_size` is the total size to ensure the file/device is large enough when testing with files.
     pub fn format_device(path: &Path, device_uuid: Uuid, device_size: u64, unit_size: u64, total_units: u64) -> Result<()> {
@@ -210,6 +286,64 @@ impl OnDeviceAllocator {
             }
         }
         None
+    }
+
+    /// Compute where fragment data region starts (right after allocator region, aligned to unit_size)
+    fn data_region_base(&self) -> u64 {
+        let end = self.allocator_offset + (self.bitmap.len() as u64);
+        let mask = self.unit_size - 1;
+        if end & mask == 0 {
+            end
+        } else {
+            (end + self.unit_size) & !mask
+        }
+    }
+
+    /// Write a fragment (header + data) into the allocated units starting at `start_unit`.
+    /// Steps: write header+data (padded to units), fdatasync, persist bitmap & bump superblock.
+    pub fn write_fragment_at(&mut self, start_unit: u64, data: &[u8], hdr: &FragmentHeader) -> Result<()> {
+        let n_units = ((hdr.total_length + (16 + 4 + 8 + 32 + 4) as u64) + self.unit_size - 1) / self.unit_size;
+        if start_unit + n_units > self.total_units {
+            anyhow::bail!("allocation out of range");
+        }
+        let offset = self.data_region_base() + start_unit * self.unit_size;
+        let mut f = OpenOptions::new().read(true).write(true).open(&self.device_path).context("Failed to open device for fragment write")?;
+        // build payload: header + data, pad to multiple of unit_size
+        let mut payload = hdr.to_bytes();
+        payload.extend_from_slice(&data);
+        let payload_len = payload.len() as u64;
+        let total_write = ((payload_len + self.unit_size - 1) / self.unit_size) * self.unit_size;
+        payload.resize(total_write as usize, 0u8);
+
+        f.seek(SeekFrom::Start(offset))?;
+        f.write_all(&payload)?;
+        // ensure data durability
+        let fd = f.as_raw_fd();
+        unsafe { libc::fdatasync(fd) };
+
+        // Persist allocator bitmap and superblock
+        self.persist()?;
+        Ok(())
+    }
+
+    /// Read a fragment from start_unit and verify header checksum and data checksum
+    pub fn read_fragment_at(&self, start_unit: u64) -> Result<(FragmentHeader, Vec<u8>)> {
+        let offset = self.data_region_base() + start_unit * self.unit_size;
+        let mut f = OpenOptions::new().read(true).open(&self.device_path).context("Failed to open device for fragment read")?;
+        // read header first
+        let mut hbuf = vec![0u8; (16+4+8+32+4)];
+        f.seek(SeekFrom::Start(offset))?;
+        f.read_exact(&mut hbuf)?;
+        let hdr = FragmentHeader::from_bytes(&hbuf)?;
+        let data_len = hdr.total_length as usize;
+        let mut data = vec![0u8; data_len];
+        f.read_exact(&mut data)?;
+        // verify data checksum
+        let ch = blake3::hash(&data);
+        if ch.as_bytes() != &hdr.data_checksum {
+            anyhow::bail!("data checksum mismatch");
+        }
+        Ok((hdr, data))
     }
 
     pub fn free_contiguous(&mut self, start: u64, n: u64) -> Result<()> {

@@ -65,7 +65,7 @@ fn main() -> Result<()> {
     
     match cli.command {
         Commands::Init { pool } => cmd_init(&pool, json_output),
-        Commands::AddDisk { pool, disk, device } => cmd_add_disk(&pool, &disk, device, json_output),
+        Commands::AddDisk { pool, disk, device, force } => cmd_add_disk(&pool, &disk, device, force, json_output),
         Commands::RemoveDisk { pool, disk } => cmd_remove_disk(&pool, &disk, json_output),
         Commands::ListDisks { pool } => cmd_list_disks(&pool, json_output),
         Commands::ListExtents { pool } => cmd_list_extents(&pool, json_output),
@@ -334,7 +334,7 @@ fn cmd_init(pool_dir: &Path, _json_output: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_add_disk(pool_dir: &Path, disk_path: &Path, device: bool, _json_output: bool) -> Result<()> {
+fn cmd_add_disk(pool_dir: &Path, disk_path: &Path, device: bool, force: bool, _json_output: bool) -> Result<()> {
     println!("Adding disk {:?} to pool {:?}", disk_path, pool_dir);
 
     // Auto-detect block device and require explicit --device flag for safety
@@ -355,6 +355,16 @@ fn cmd_add_disk(pool_dir: &Path, disk_path: &Path, device: bool, _json_output: b
             return Err(anyhow!("Raw device path does not exist: {:?}", disk_path));
         }
         println!("  Treating {:?} as a raw block device (explicit confirmation)", disk_path);
+
+        // If device looks like it already contains a superblock, require --force to proceed
+        if crate::on_device_allocator::OnDeviceAllocator::has_superblock(disk_path) && !force {
+            return Err(anyhow!("Device {:?} appears to have an on-device superblock. Use --force to overwrite.", disk_path));
+        }
+
+        // Try to acquire exclusive lock on device
+        let _lock = crate::on_device_allocator::OnDeviceAllocator::acquire_device_lock(disk_path)
+            .context("Failed to acquire exclusive device lock (device may be in use)")?;
+
     } else {
         // Create disk directory if needed
         fs::create_dir_all(disk_path).context("Failed to create disk directory")?;

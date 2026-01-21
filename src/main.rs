@@ -3,6 +3,15 @@ mod config;
 mod crash_sim;
 mod diagnostics;
 mod disk;
+mod allocator;
+mod free_extent;
+mod metadata_btree;
+mod file_locks;
+mod io_scheduler;
+mod defrag;
+mod trim;
+mod reclamation;
+mod io_alignment;
 mod extent;
 mod fuse_impl;
 mod gc;
@@ -53,7 +62,7 @@ fn main() -> Result<()> {
     
     match cli.command {
         Commands::Init { pool } => cmd_init(&pool, json_output),
-        Commands::AddDisk { pool, disk } => cmd_add_disk(&pool, &disk, json_output),
+        Commands::AddDisk { pool, disk, device } => cmd_add_disk(&pool, &disk, device, json_output),
         Commands::RemoveDisk { pool, disk } => cmd_remove_disk(&pool, &disk, json_output),
         Commands::ListDisks { pool } => cmd_list_disks(&pool, json_output),
         Commands::ListExtents { pool } => cmd_list_extents(&pool, json_output),
@@ -81,6 +90,14 @@ fn main() -> Result<()> {
         Commands::Metrics { pool } => cmd_metrics(&pool, json_output),
         Commands::Mount { pool, mountpoint } => cmd_mount(&pool, &mountpoint, json_output),
         Commands::Benchmark { pool, file_size, operations } => cmd_benchmark(&pool, file_size, operations, json_output),
+        Commands::DefragAnalyze { pool } => cmd_defrag_analyze(&pool, json_output),
+        Commands::DefragStart { pool, intensity } => cmd_defrag_start(&pool, &intensity, json_output),
+        Commands::DefragStop { pool } => cmd_defrag_stop(&pool, json_output),
+        Commands::DefragStatus { pool } => cmd_defrag_status(&pool, json_output),
+        Commands::TrimNow { pool, disk } => cmd_trim_now(&pool, disk, json_output),
+        Commands::TrimStatus { pool } => cmd_trim_status(&pool, json_output),
+        Commands::SetReclamationPolicy { pool, policy } => cmd_set_reclamation_policy(&pool, &policy, json_output),
+        Commands::ReclamationStatus { pool } => cmd_reclamation_status(&pool, json_output),
         Commands::Health { pool } => cmd_health(&pool, json_output),
     }
 }
@@ -314,22 +331,45 @@ fn cmd_init(pool_dir: &Path, _json_output: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_add_disk(pool_dir: &Path, disk_path: &Path, _json_output: bool) -> Result<()> {
+fn cmd_add_disk(pool_dir: &Path, disk_path: &Path, device: bool, _json_output: bool) -> Result<()> {
     println!("Adding disk {:?} to pool {:?}", disk_path, pool_dir);
-    
-    // Create disk directory if needed
-    fs::create_dir_all(disk_path).context("Failed to create disk directory")?;
-    
+
+    // Auto-detect block device and require explicit --device flag for safety
+    if disk_path.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            let meta = fs::metadata(disk_path).context("Failed to stat path")?;
+            if meta.file_type().is_block_device() && !device {
+                return Err(anyhow!("Path {:?} appears to be a block device; use --device to add raw devices explicitly", disk_path));
+            }
+        }
+    }
+
+    // For raw block devices, require explicit confirmation and do not create directories
+    if device {
+        if !disk_path.exists() {
+            return Err(anyhow!("Raw device path does not exist: {:?}", disk_path));
+        }
+        println!("  Treating {:?} as a raw block device (explicit confirmation)", disk_path);
+    } else {
+        // Create disk directory if needed
+        fs::create_dir_all(disk_path).context("Failed to create disk directory")?;
+    }
+
     // Initialize disk
-    let disk = Disk::new(disk_path.to_path_buf())?;
-    println!("  Disk UUID: {}", disk.uuid);
+    let disk = if device {
+        Disk::from_block_device(disk_path.to_path_buf())?
+    } else {
+        Disk::new(disk_path.to_path_buf())?
+    };
     println!("  Capacity: {} MB", disk.capacity_bytes / 1024 / 1024);
-    
+
     // Add to pool
     let mut pool = DiskPool::load(pool_dir)?;
     pool.add_disk(disk_path.to_path_buf());
     pool.save(pool_dir)?;
-    
+
     println!("✓ Disk added");
     Ok(())
 }
@@ -438,6 +478,100 @@ fn cmd_show_redundancy(pool_dir: &Path, _json_output: bool) -> Result<()> {
         println!("✓ All extents are fully redundant");
     }
     
+    Ok(())
+}
+
+// -----------------------------
+// Phase 12: Defragmentation & TRIM
+// -----------------------------
+
+fn cmd_defrag_analyze(pool_dir: &Path, json_output: bool) -> Result<()> {
+    use crate::defrag::{DefragConfig, DefragmentationEngine};
+
+    let pool = DiskPool::load(pool_dir)?;
+    let disks = pool.load_disks()?;
+    let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
+    let storage = StorageEngine::new(metadata, disks);
+
+    let defrag_engine = DefragmentationEngine::new(DefragConfig::default());
+    let analysis = defrag_engine.analyze_fragmentation(&storage)?;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&analysis)?);
+    } else {
+        println!("Fragmentation Analysis:");
+        println!("  Total extents: {}", analysis.total_extents);
+        println!("  Fragmented extents: {}", analysis.fragmented_extents);
+        println!("  Fragmentation ratio: {:.2}%", analysis.overall_fragmentation_ratio * 100.0);
+        println!("  Recommendation: {:?}", analysis.recommendation);
+        println!("\nPer-Disk Statistics:");
+        for disk_stats in &analysis.per_disk_stats {
+            println!("  Disk {}:", disk_stats.disk_uuid);
+            println!("    Total extents: {}", disk_stats.total_extents);
+            println!("    Fragmented: {}", disk_stats.fragmented_extents);
+            println!("    Ratio: {:.2}%", disk_stats.fragmentation_ratio * 100.0);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_defrag_start(pool_dir: &Path, intensity: &str, json_output: bool) -> Result<()> {
+    use crate::defrag::{DefragConfig, DefragIntensity, DefragmentationEngine};
+    use std::sync::Arc;
+
+    let pool = DiskPool::load(pool_dir)?;
+    let disks = pool.load_disks()?;
+    let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
+    let storage = Arc::new(StorageEngine::new(metadata, disks));
+    let metrics = Arc::new(Metrics::new());
+
+    let intensity_enum = match intensity {
+        "low" => DefragIntensity::Low,
+        "medium" => DefragIntensity::Medium,
+        "high" => DefragIntensity::High,
+        _ => DefragIntensity::Medium,
+    };
+
+    let mut cfg = DefragConfig::default();
+    cfg.enabled = true;
+    cfg.intensity = intensity_enum;
+
+    let engine = DefragmentationEngine::new(cfg);
+    engine.start(storage, metrics)?;
+
+    println!("✓ Defragmentation started (intensity={})", intensity);
+    Ok(())
+}
+
+fn cmd_defrag_stop(_pool_dir: &Path, _json_output: bool) -> Result<()> {
+    println!("Defragmentation stop requested (not fully implemented)");
+    Ok(())
+}
+
+fn cmd_defrag_status(_pool_dir: &Path, _json_output: bool) -> Result<()> {
+    println!("Defragmentation status: (not implemented yet)");
+    Ok(())
+}
+
+fn cmd_trim_now(pool_dir: &Path, _disk: Option<std::path::PathBuf>, _json_output: bool) -> Result<()> {
+    println!("TRIM/DISCARD requested (not implemented yet)");
+    Ok(())
+}
+
+fn cmd_trim_status(_pool_dir: &Path, _json_output: bool) -> Result<()> {
+    println!("TRIM status: (not implemented yet)");
+    Ok(())
+}
+
+fn cmd_set_reclamation_policy(pool_dir: &Path, policy_str: &str, _json_output: bool) -> Result<()> {
+    println!("Setting reclamation policy to '{}' for pool {:?}", policy_str, pool_dir);
+    // TODO: Validate and persist policy; for now just acknowledge
+    Ok(())
+}
+
+fn cmd_reclamation_status(pool_dir: &Path, _json_output: bool) -> Result<()> {
+    println!("Reclamation status for pool {:?}: (not implemented yet)", pool_dir);
     Ok(())
 }
 

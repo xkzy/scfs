@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(not(target_os = "windows"))]
 use crate::metadata::FileType as InodeFileType;
 #[cfg(not(target_os = "windows"))]
-use crate::storage_engine::FilesystemInterface;
+use crate::fs_interface::FilesystemInterface;
 #[cfg(not(target_os = "windows"))]
 use crate::file_locks::{LockManager, FileLock, LockType};
 #[cfg(target_os = "macos")]
@@ -38,6 +38,9 @@ pub struct DynamicFS {
     pub(crate) lock_manager: LockManager,
     #[cfg(target_os = "macos")]
     pub(crate) macos_handler: MacOSHandler,
+    pub(crate) xattr_cache: Option<crate::fuse_optimizations::XAttrCache>,
+    pub(crate) readahead_manager: Option<crate::fuse_optimizations::ReadAheadManager>,
+    pub(crate) config: Option<crate::fuse_optimizations::OptimizedFUSEConfig>,
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -48,6 +51,27 @@ impl DynamicFS {
             lock_manager: LockManager::new(),
             #[cfg(target_os = "macos")]
             macos_handler: MacOSHandler::new(),
+            xattr_cache: None,
+            readahead_manager: None,
+            config: None,
+        }
+    }
+    
+    pub fn new_with_config(
+        storage: Box<dyn FilesystemInterface + Send + Sync>,
+        config: crate::fuse_optimizations::OptimizedFUSEConfig,
+    ) -> Self {
+        let xattr_cache = Some(crate::fuse_optimizations::XAttrCache::new(config.clone()));
+        let readahead_manager = Some(crate::fuse_optimizations::ReadAheadManager::new(config.clone()));
+        
+        DynamicFS { 
+            storage,
+            lock_manager: LockManager::new(),
+            #[cfg(target_os = "macos")]
+            macos_handler: MacOSHandler::new(),
+            xattr_cache,
+            readahead_manager,
+            config: Some(config),
         }
     }
     

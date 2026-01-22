@@ -756,7 +756,7 @@ impl StorageEngine {
     }
 }
 
-impl crate::storage_engine::FilesystemInterface for StorageEngine {
+impl crate::fs_interface::FilesystemInterface for StorageEngine {
     fn read_file(&self, ino: u64) -> Result<Vec<u8>> {
         self.read_file(ino)
     }
@@ -799,7 +799,7 @@ impl crate::storage_engine::FilesystemInterface for StorageEngine {
         self.update_inode(inode)
     }
 
-    fn stat(&self) -> Result<crate::storage_engine::FilesystemStats> {
+    fn stat(&self) -> Result<crate::fs_interface::FilesystemStats> {
         // For now, return basic stats. In a full implementation, we'd track these metrics.
         // This is a simplified version that doesn't scan all metadata.
         let disks = self.disks.read().unwrap();
@@ -809,7 +809,7 @@ impl crate::storage_engine::FilesystemInterface for StorageEngine {
         // Access metadata manager for counting
         let metadata_w = self.metadata.write().unwrap();
 
-        Ok(crate::storage_engine::FilesystemStats {
+        Ok(crate::fs_interface::FilesystemStats {
             // Count files and directories by scanning inode_table persisted entries
             total_files: {
                 let mut count = 0u64;

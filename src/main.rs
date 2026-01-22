@@ -49,6 +49,17 @@ mod tiering;
 mod backup_evolution;
 mod security;
 
+// Phase 9.1: Cross-Platform Storage Abstraction modules
+mod fs_interface;
+mod path_utils;
+mod mount;
+
+// Phase 10: Mixed Storage Speed Optimization
+mod data_cache;
+
+// Phase 14: Multi-Level Caching Optimization
+mod multi_level_cache;
+
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use std::fs;
@@ -759,7 +770,7 @@ fn cmd_mount(pool_dir: &Path, mountpoint: &Path, _json_output: bool) -> Result<(
     println!();
     
     // Use cross-platform mounting
-    crate::storage_engine::mount::mount_filesystem(Box::new(storage), mountpoint)?;
+    crate::mount::mount_filesystem(Box::new(storage), mountpoint)?;
     
     Ok(())
 }

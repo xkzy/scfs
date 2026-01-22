@@ -30,3 +30,22 @@ winapi = { version = "0.3", features = ["fileapi", "handleapi", "winbase", "winn
 
 [dev-dependencies]
 tempfile = "3.8"
+criterion = "0.5"
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[[bench]]
+name = "fs_comparison"
+harness = false
+
+[profile.release]
+lto = true           # Link-time optimization for better performance
+codegen-units = 1    # Better optimization (slower compile)
+opt-level = 3        # Maximum optimization
+strip = true         # Strip symbols to reduce binary size
+
+[profile.bench]
+inherits = "release"
+debug = true         # Keep debug info for profiling

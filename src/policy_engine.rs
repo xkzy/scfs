@@ -14,6 +14,11 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+// Time constants for better maintainability
+const SECONDS_PER_HOUR: u64 = 3600;
+const SECONDS_PER_DAY: u64 = 86400;
+const SECONDS_PER_HOUR_F64: f64 = 3600.0;
+
 /// Storage tier for tiering decisions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StorageTier {
@@ -141,7 +146,7 @@ impl Policy {
                 let current_hour = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .ok()
-                    .map(|d| (d.as_secs() / 3600) % 24)
+                    .map(|d| (d.as_secs() / SECONDS_PER_HOUR) % 24)
                     .unwrap_or(0) as u32;
                 
                 if start_hour <= end_hour {
@@ -155,7 +160,7 @@ impl Policy {
                 state.access_count >= *min_accesses
             }
             PolicyRule::DataAge { min_days } => {
-                let age_days = state.age_seconds / 86400;
+                let age_days = state.age_seconds / SECONDS_PER_DAY;
                 age_days >= *min_days
             }
         }
@@ -220,12 +225,15 @@ impl WorkloadFeatures {
         // Simple temporal pattern: accesses per hour over last 24 hours
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_else(|_| {
+                // Fallback to a reasonable default if clock is before UNIX_EPOCH
+                std::time::Duration::from_secs(0)
+            })
             .as_secs();
         
         let mut hourly_buckets = vec![0.0; 24];
         for (timestamp, _, _) in accesses {
-            let age_hours = ((now - timestamp) / 3600) as usize;
+            let age_hours = ((now - timestamp) / SECONDS_PER_HOUR) as usize;
             if age_hours < 24 {
                 hourly_buckets[age_hours] += 1.0;
             }
@@ -236,7 +244,7 @@ impl WorkloadFeatures {
             .unwrap_or(0);
         
         Self {
-            access_frequency: total / 3600.0, // Accesses per hour
+            access_frequency: total / SECONDS_PER_HOUR_F64, // Accesses per hour
             read_ratio: read_count / total,
             avg_size: (total_size as f64) / total,
             temporal_pattern: hourly_buckets,
@@ -294,7 +302,7 @@ impl HotnessPredictor {
                 self.weights[0] += learning_rate * error;
                 self.weights[1] += learning_rate * error * features.access_frequency;
                 
-                let recency_score = 1.0 / (1.0 + features.last_access_recency / 3600.0);
+                let recency_score = 1.0 / (1.0 + features.last_access_recency / SECONDS_PER_HOUR_F64);
                 self.weights[2] += learning_rate * error * recency_score;
                 self.weights[3] += learning_rate * error * features.read_ratio;
             }
@@ -319,7 +327,7 @@ impl HotnessPredictor {
     }
     
     fn predict_internal(&self, features: &WorkloadFeatures) -> f64 {
-        let recency_score = 1.0 / (1.0 + features.last_access_recency / 3600.0);
+        let recency_score = 1.0 / (1.0 + features.last_access_recency / SECONDS_PER_HOUR_F64);
         
         self.weights[0]
             + self.weights[1] * features.access_frequency
@@ -463,7 +471,7 @@ impl PolicyEngine {
         let entry = AuditEntry {
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                 .as_secs(),
             policy_name: proposal.policy_name.clone(),
             action: proposal.action.clone(),

@@ -49,16 +49,27 @@ mod tiering;
 mod backup_evolution;
 mod security;
 
-// Phase 9.1: Cross-Platform Storage Abstraction modules
+// Phase 9: Multi-OS Support
 pub mod fs_interface;
 pub mod path_utils;
 pub mod mount;
+
+// Phase 9.2: Windows Support
+#[cfg(target_os = "windows")]
+pub mod windows_fs;
+
+// Phase 9.3: macOS Support
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 // Phase 10: Mixed Storage Speed Optimization
 pub mod data_cache;
 
 // Phase 14: Multi-Level Caching Optimization
 pub mod multi_level_cache;
+
+// Phase 13: Multi-Node Network Distribution
+pub mod distributed;
 
 // Phase 17: Automated Intelligent Policies
 pub mod policy_engine;

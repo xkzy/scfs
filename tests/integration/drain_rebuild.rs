@@ -1,4 +1,4 @@
-use dynamicfs::storage::tests::setup_test_env;
+use dynamicfs::test_utils::setup_test_env;
 use dynamicfs::disk::Disk;
 
 #[test]

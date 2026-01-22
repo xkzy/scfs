@@ -281,40 +281,54 @@ impl DataCache {
         let to_free = (current + needed_bytes) - self.max_size_bytes;
         let mut freed = 0;
         
+        // Lock order: entries -> stats -> current_size (consistent with put())
         let mut entries = self.entries.lock().unwrap();
         let mut stats = self.stats.lock().unwrap();
         
-        // Build list of candidates: (uuid, last_access, is_hot, size)
-        let mut candidates: Vec<(Uuid, u64, bool, usize)> = entries
+        // Build list of candidates with named struct for clarity
+        #[derive(Debug)]
+        struct EvictionCandidate {
+            uuid: Uuid,
+            last_access: u64,
+            is_hot: bool,
+            size: usize,
+        }
+        
+        let mut candidates: Vec<EvictionCandidate> = entries
             .iter()
-            .map(|(uuid, entry)| (*uuid, entry.last_access, entry.is_hot, entry.size))
+            .map(|(uuid, entry)| EvictionCandidate {
+                uuid: *uuid,
+                last_access: entry.last_access,
+                is_hot: entry.is_hot,
+                size: entry.size,
+            })
             .collect();
         
         // Sort by priority: cold first, then by LRU
         // Hot extents have higher priority (sort to end)
         candidates.sort_by(|a, b| {
             // First compare by hot status (cold first)
-            match (a.2, b.2) {
+            match (a.is_hot, b.is_hot) {
                 (false, true) => std::cmp::Ordering::Less,  // Cold < Hot
                 (true, false) => std::cmp::Ordering::Greater, // Hot > Cold
-                _ => a.1.cmp(&b.1), // Same hot status, compare by LRU
+                _ => a.last_access.cmp(&b.last_access), // Same hot status, compare by LRU
             }
         });
         
         // Evict entries until we've freed enough space
-        for (uuid, _, _, size) in candidates {
+        for candidate in candidates {
             if freed >= to_free {
                 break;
             }
             
-            entries.remove(&uuid);
-            freed += size;
+            entries.remove(&candidate.uuid);
+            freed += candidate.size;
             stats.evictions += 1;
             
-            log::trace!("Evicted extent {} ({} bytes)", uuid, size);
+            log::trace!("Evicted extent {} ({} bytes)", candidate.uuid, candidate.size);
         }
         
-        // Update size
+        // Update size (lock acquired last for consistent ordering)
         let mut current_size = self.current_size.lock().unwrap();
         *current_size = current_size.saturating_sub(freed);
     }
@@ -369,7 +383,7 @@ impl DataCache {
 fn current_timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("System clock set before Unix epoch")
         .as_secs()
 }
 

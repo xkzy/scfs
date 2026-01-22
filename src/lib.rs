@@ -48,3 +48,8 @@ mod snapshots;
 mod tiering;
 mod backup_evolution;
 mod security;
+
+// Phase 9.1: Cross-Platform Storage Abstraction modules
+pub mod fs_interface;
+pub mod path_utils;
+pub mod mount;

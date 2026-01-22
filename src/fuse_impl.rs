@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(not(target_os = "windows"))]
 use crate::metadata::FileType as InodeFileType;
 #[cfg(not(target_os = "windows"))]
-use crate::storage_engine::FilesystemInterface;
+use crate::fs_interface::FilesystemInterface;
 #[cfg(not(target_os = "windows"))]
 use crate::file_locks::{LockManager, FileLock, LockType};
 #[cfg(target_os = "macos")]

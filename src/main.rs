@@ -49,6 +49,11 @@ mod tiering;
 mod backup_evolution;
 mod security;
 
+// Phase 9.1: Cross-Platform Storage Abstraction modules
+mod fs_interface;
+mod path_utils;
+mod mount;
+
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use std::fs;

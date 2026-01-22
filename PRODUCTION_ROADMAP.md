@@ -620,13 +620,6 @@ Successfully implemented a **fully production-hardened, crash-consistent filesys
 - Prometheus metrics exporter (monitoring.rs)
 - HTTP metrics server (metrics-server command)
 - Monitoring dashboards compatibility
->>>>>>> origin/copilot/implement-roadmap
-
-**Deliverables**:
-- Comprehensive CLI
-- Structured logging
-- Prometheus metrics
-- Monitoring dashboards
 - Operator runbook
 
 ---

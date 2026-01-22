@@ -53,3 +53,6 @@ mod security;
 pub mod fs_interface;
 pub mod path_utils;
 pub mod mount;
+
+// Phase 10: Mixed Storage Speed Optimization
+pub mod data_cache;

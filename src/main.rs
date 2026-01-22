@@ -54,6 +54,9 @@ mod fs_interface;
 mod path_utils;
 mod mount;
 
+// Phase 10: Mixed Storage Speed Optimization
+mod data_cache;
+
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use std::fs;

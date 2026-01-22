@@ -1,5 +1,5 @@
 use super::*;
-use super::tests::setup_test_env;
+use crate::test_utils::setup_test_env;
 use crate::crash_sim::{get_crash_simulator, CrashPoint};
 use tempfile::TempDir;
 use std::fs;

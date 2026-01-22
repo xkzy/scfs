@@ -73,3 +73,7 @@ pub mod distributed;
 
 // Phase 17: Automated Intelligent Policies
 pub mod policy_engine;
+
+// Phase 11 Alternative: FUSE Performance Optimization
+#[cfg(not(target_os = "windows"))]
+pub mod fuse_optimizations;

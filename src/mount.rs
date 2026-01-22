@@ -127,46 +127,39 @@ pub fn mount_filesystem(
     }
 }
 
-/// Mount filesystem on Linux using FUSE
+/// Mount filesystem on Linux using FUSE with optimized settings
 #[cfg(target_os = "linux")]
 fn mount_linux(
     fs: Box<dyn FilesystemInterface + Send + Sync>,
     mountpoint: &Path,
 ) -> Result<()> {
     use crate::fuse_impl::DynamicFS;
-    use fuser::MountOption;
+    use crate::fuse_optimizations::OptimizedFUSEConfig;
 
-    let options = vec![
-        MountOption::FSName("dynamicfs".to_string()),
-        MountOption::AllowOther,
-        MountOption::DefaultPermissions,
-    ];
+    // Use high-performance configuration
+    let config = OptimizedFUSEConfig::high_performance();
+    let options = config.to_mount_options();
 
-    let dynamic_fs = DynamicFS::new(fs);
+    let dynamic_fs = DynamicFS::new_with_config(fs, config);
 
     fuser::mount2(dynamic_fs, mountpoint, &options)
         .map_err(|e| anyhow::anyhow!("Failed to mount filesystem: {}", e))
 }
 
-/// Mount filesystem on macOS using macFUSE/FUSE-T
+/// Mount filesystem on macOS using macFUSE/FUSE-T with optimized settings
 #[cfg(target_os = "macos")]
 fn mount_macos(
     fs: Box<dyn FilesystemInterface + Send + Sync>,
     mountpoint: &Path,
 ) -> Result<()> {
     use crate::fuse_impl::DynamicFS;
-    use fuser::MountOption;
+    use crate::fuse_optimizations::OptimizedFUSEConfig;
 
-    let options = vec![
-        MountOption::FSName("dynamicfs".to_string()),
-        MountOption::AllowOther,
-        MountOption::DefaultPermissions,
-        // macOS-specific options for better integration
-        MountOption::AutoUnmount,
-        MountOption::AllowRoot,
-    ];
+    // Use high-performance configuration
+    let config = OptimizedFUSEConfig::high_performance();
+    let options = config.to_mount_options();
 
-    let dynamic_fs = DynamicFS::new(fs);
+    let dynamic_fs = DynamicFS::new_with_config(fs, config);
 
     fuser::mount2(dynamic_fs, mountpoint, &options)
         .map_err(|e| anyhow::anyhow!("Failed to mount filesystem: {}", e))

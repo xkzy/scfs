@@ -57,6 +57,9 @@ mod mount;
 // Phase 10: Mixed Storage Speed Optimization
 mod data_cache;
 
+// Phase 14: Multi-Level Caching Optimization
+mod multi_level_cache;
+
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use std::fs;

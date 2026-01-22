@@ -46,6 +46,7 @@ use std::fs;
 use std::io::{Read, Write};
 use uuid::Uuid;
 use anyhow::{Result, Context};
+use serde::{Serialize, Deserialize};
 use crate::data_cache::DataCache;
 
 /// Multi-level cache manager
@@ -89,7 +90,7 @@ pub struct L2Cache {
 }
 
 /// L2 cache entry metadata
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct L2CacheEntry {
     /// File name in cache directory
     filename: String,
@@ -204,6 +205,9 @@ pub enum AdmissionPolicy {
     Sampled(u8), // 0-100 percentage
 }
 
+/// Index persistence interval (save every N insertions)
+const INDEX_SAVE_INTERVAL: usize = 100;
+
 impl L2Cache {
     /// Create a new L2 cache
     ///
@@ -241,7 +245,7 @@ impl L2Cache {
             let content = fs::read_to_string(&index_path)
                 .context("Failed to read L2 cache index")?;
             let index: HashMap<Uuid, L2CacheEntry> = serde_json::from_str(&content)
-                .context("Failed to parse L2 cache index")?;
+                .with_context(|| format!("Failed to parse L2 cache index from {:?}", index_path))?;
             Ok(index)
         } else {
             Ok(HashMap::new())
@@ -306,14 +310,16 @@ impl L2Cache {
         if let Some(old_entry) = self.index.remove(&extent_uuid) {
             self.current_size = self.current_size.saturating_sub(old_entry.size);
             let old_path = self.cache_dir.join(&old_entry.filename);
-            let _ = fs::remove_file(old_path); // Ignore errors
+            if let Err(e) = fs::remove_file(old_path) {
+                log::warn!("Failed to remove old L2 cache file: {}", e);
+            }
         }
         
         self.index.insert(extent_uuid, entry);
         self.current_size += data_size;
         
-        // Save index periodically (every 100 insertions for performance)
-        if self.index.len() % 100 == 0 {
+        // Save index periodically (every INDEX_SAVE_INTERVAL insertions for performance)
+        if self.index.len() % INDEX_SAVE_INTERVAL == 0 {
             self.save_index()?;
         }
         
@@ -382,7 +388,9 @@ impl L2Cache {
     pub fn flush(&mut self) -> Result<()> {
         for entry in self.index.values() {
             let file_path = self.cache_dir.join(&entry.filename);
-            let _ = fs::remove_file(file_path);
+            if let Err(e) = fs::remove_file(file_path) {
+                log::warn!("Failed to remove L2 cache file during flush: {}", e);
+            }
         }
         self.index.clear();
         self.current_size = 0;
@@ -447,7 +455,12 @@ impl MultiLevelCache {
                 AdmissionPolicy::Always => true,
                 AdmissionPolicy::HotOnly => is_hot,
                 AdmissionPolicy::Sampled(pct) => {
-                    (extent_uuid.as_bytes()[0] as u32 * 100 / 255) < pct as u32
+                    // Use a simple hash for sampling to avoid correlation
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = DefaultHasher::new();
+                    extent_uuid.hash(&mut hasher);
+                    (hasher.finish() % 100) < pct as u64
                 }
             };
             drop(policy);
@@ -481,7 +494,12 @@ impl MultiLevelCache {
             AdmissionPolicy::Always => true,
             AdmissionPolicy::HotOnly => is_hot,
             AdmissionPolicy::Sampled(pct) => {
-                (extent_uuid.as_bytes()[0] as u32 * 100 / 255) < pct as u32
+                // Use a simple hash for sampling
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                extent_uuid.hash(&mut hasher);
+                (hasher.finish() % 100) < pct as u64
             }
         };
         
@@ -494,7 +512,12 @@ impl MultiLevelCache {
             AdmissionPolicy::Always => true,
             AdmissionPolicy::HotOnly => is_hot,
             AdmissionPolicy::Sampled(pct) => {
-                (extent_uuid.as_bytes()[1] as u32 * 100 / 255) < pct as u32
+                // Use different hash seed for L2
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                (extent_uuid, 42u64).hash(&mut hasher); // Add seed
+                (hasher.finish() % 100) < pct as u64
             }
         };
         
@@ -546,47 +569,6 @@ fn current_timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("System clock set before Unix epoch")
         .as_secs()
-}
-
-// Implement Serialize/Deserialize for L2CacheEntry
-use serde::{Serialize, Deserialize};
-
-impl Serialize for L2CacheEntry {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("L2CacheEntry", 4)?;
-        state.serialize_field("filename", &self.filename)?;
-        state.serialize_field("size", &self.size)?;
-        state.serialize_field("last_access", &self.last_access)?;
-        state.serialize_field("is_hot", &self.is_hot)?;
-        state.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for L2CacheEntry {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Helper {
-            filename: String,
-            size: usize,
-            last_access: u64,
-            is_hot: bool,
-        }
-        
-        let helper = Helper::deserialize(deserializer)?;
-        Ok(L2CacheEntry {
-            filename: helper.filename,
-            size: helper.size,
-            last_access: helper.last_access,
-            is_hot: helper.is_hot,
-        })
-    }
 }
 
 #[cfg(test)]

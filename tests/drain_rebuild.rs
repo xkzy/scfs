@@ -1,8 +1,7 @@
 use dynamicfs::test_utils::setup_test_env;
 use dynamicfs::disk::Disk;
 
-#[test]
-fn test_disk_drain_triggers_migration_and_removal() {
+pub fn drain_rebuild_flow() {
     // Setup environment
     let (pool_dir, _disk_dirs, metadata, mut disks) = setup_test_env();
 
@@ -30,4 +29,9 @@ fn test_disk_drain_triggers_migration_and_removal() {
             assert_ne!(loc.disk_uuid, disks[0].uuid, "Fragments should be migrated off drained disk");
         }
     }
+}
+
+#[test]
+fn test_disk_drain_triggers_migration_and_removal() {
+    drain_rebuild_flow();
 }

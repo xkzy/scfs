@@ -59,3 +59,6 @@ pub mod data_cache;
 
 // Phase 14: Multi-Level Caching Optimization
 pub mod multi_level_cache;
+
+// Phase 17: Automated Intelligent Policies
+pub mod policy_engine;

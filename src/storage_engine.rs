@@ -2,10 +2,11 @@
 //!
 //! This module re-exports the cross-platform filesystem interface and utilities.
 //! The actual implementations are in dedicated modules for better organization.
+//!
+//! For path utilities, use `crate::path_utils`.
+//! For mounting operations, use `crate::mount`.
 
 pub use crate::fs_interface::{FilesystemInterface, FilesystemStats};
-pub use crate::path_utils;
-pub use crate::mount;
 
 #[cfg(test)]
 mod tests {

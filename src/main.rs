@@ -764,7 +764,7 @@ fn cmd_mount(pool_dir: &Path, mountpoint: &Path, _json_output: bool) -> Result<(
     println!();
     
     // Use cross-platform mounting
-    crate::storage_engine::mount::mount_filesystem(Box::new(storage), mountpoint)?;
+    crate::mount::mount_filesystem(Box::new(storage), mountpoint)?;
     
     Ok(())
 }

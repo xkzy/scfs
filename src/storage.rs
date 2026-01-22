@@ -8,6 +8,8 @@ use crate::placement::PlacementEngine;
 use crate::redundancy;
 use crate::metrics::Metrics;
 use crate::scheduler::{ReplicaSelector, ReplicaSelectionStrategy};
+use crate::write_optimizer::{WriteBatcher, MetadataCache};
+use crate::adaptive::AdaptiveEngine;
 
 /// Storage engine handling read/write operations
 pub struct StorageEngine {
@@ -15,6 +17,11 @@ pub struct StorageEngine {
     disks: Arc<RwLock<Vec<Disk>>>,
     placement: PlacementEngine,
     metrics: Arc<Metrics>,
+    // Phase 5.2: Write Optimization
+    write_batcher: Arc<WriteBatcher>,
+    metadata_cache: Arc<MetadataCache>,
+    // Phase 5.3: Adaptive Behavior
+    adaptive_engine: Arc<RwLock<AdaptiveEngine>>,
 }
 
 impl StorageEngine {
@@ -24,6 +31,11 @@ impl StorageEngine {
             disks: Arc::new(RwLock::new(disks)),
             placement: PlacementEngine,
             metrics: Arc::new(Metrics::new()),
+            // Phase 5.2: Write Optimization - batching for concurrent writes, caching for fast metadata access
+            write_batcher: Arc::new(WriteBatcher::new(10, 10 * 1024 * 1024)), // 10 extents or 10MB
+            metadata_cache: Arc::new(MetadataCache::new(100)), // Cache up to 100 extents
+            // Phase 5.3: Adaptive Behavior - dynamic extent sizing and workload learning
+            adaptive_engine: Arc::new(RwLock::new(AdaptiveEngine::new(DEFAULT_EXTENT_SIZE))),
         }
     }
     
@@ -33,6 +45,11 @@ impl StorageEngine {
             disks: Arc::new(RwLock::new(disks)),
             placement: PlacementEngine,
             metrics,
+            // Phase 5.2: Write Optimization
+            write_batcher: Arc::new(WriteBatcher::new(10, 10 * 1024 * 1024)),
+            metadata_cache: Arc::new(MetadataCache::new(100)),
+            // Phase 5.3: Adaptive Behavior
+            adaptive_engine: Arc::new(RwLock::new(AdaptiveEngine::new(DEFAULT_EXTENT_SIZE))),
         }
     }
     
@@ -200,11 +217,25 @@ impl StorageEngine {
         let mut result = Vec::new();
         
         // Read each extent
-        for extent_uuid in &extent_map.extents {
-            let mut extent = metadata.load_extent(extent_uuid)?;
+        for (idx, extent_uuid) in extent_map.extents.iter().enumerate() {
+            // Phase 5.2: Try to load extent from metadata cache first
+            let mut extent = if let Some(cached_extent) = self.metadata_cache.get(extent_uuid) {
+                log::debug!("Cache hit for extent {}", extent_uuid);
+                cached_extent
+            } else {
+                log::debug!("Cache miss for extent {}", extent_uuid);
+                let ext = metadata.load_extent(extent_uuid)?;
+                // Phase 5.2: Store in cache for future access
+                self.metadata_cache.put(*extent_uuid, ext.clone());
+                ext
+            };
             
             // Record read access
             extent.record_read();
+            
+            // Phase 5.3: Record extent access for adaptive learning
+            let offset = idx as u64 * DEFAULT_EXTENT_SIZE as u64;
+            self.adaptive_engine.write().unwrap().record_extent_access(*extent_uuid, offset);
             
             // Read fragments with current policy
             let disks = self.disks.read().unwrap();
@@ -236,6 +267,8 @@ impl StorageEngine {
                     log::error!("Failed to perform lazy migration for extent {}: {}", extent_uuid, e);
                 } else {
                     metadata.save_extent(&extent)?;
+                    // Phase 5.2: Update cache with migrated extent
+                    self.metadata_cache.put(*extent_uuid, extent.clone());
                 }
             }
             
@@ -263,14 +296,21 @@ impl StorageEngine {
                     }
                 }
                 metadata.save_extent(&extent)?;
+                // Phase 5.2: Update cache after rebuild
+                self.metadata_cache.put(*extent_uuid, extent.clone());
             }
             
             // Save updated extent with new access stats
             metadata.save_extent(&extent)?;
+            // Phase 5.2: Update cache with updated access stats
+            self.metadata_cache.put(*extent_uuid, extent.clone());
             
             // Append to result (only the actual data, not padding)
             result.extend_from_slice(&extent_data[..extent.size]);
         }
+        
+        // Phase 5.3: Periodically update workload classifications
+        self.adaptive_engine.write().unwrap().update_classifications();
         
         // Record metrics for read operation
         self.metrics.record_disk_read(result.len() as u64);
@@ -479,6 +519,9 @@ impl StorageEngine {
                 let metadata = self.metadata.read().unwrap();
                 metadata.save_extent(&extent)?;
             }
+            
+            // Phase 5.2: Update metadata cache with rebundled extent
+            self.metadata_cache.put(*extent_uuid, extent.clone());
             
             log::info!(
                 "Successfully rebundled extent {} to {:?}",

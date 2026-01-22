@@ -8,6 +8,7 @@ mod config;
 mod crash_sim;
 mod diagnostics;
 mod disk;
+mod test_utils;
 mod allocator;
 mod on_device_allocator;
 mod free_extent;

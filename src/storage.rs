@@ -818,6 +818,10 @@ impl crate::storage_engine::FilesystemInterface for StorageEngine {
 
 
 
+// crash tests moved to tests/unit/crash_tests.rs; keep a thin shim for compatibility
 #[cfg(test)]
-#[path = "crash_tests.rs"]
-mod crash_tests;
+mod crash_tests {
+    // Re-export the moved crash tests so `cargo test` treats them as unit tests in the test crate
+    include!("../tests/unit/crash_tests.rs");
+}
+

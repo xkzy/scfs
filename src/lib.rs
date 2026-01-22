@@ -8,7 +8,12 @@ mod config;
 mod crash_sim;
 mod diagnostics;
 mod disk;
-mod test_utils;
+// test_utils moved into tests/unit; expose helper shim to compile test-only APIs
+#[cfg(test)]
+mod test_utils {
+    include!("../tests/unit/test_utils.rs");
+}
+
 mod allocator;
 mod on_device_allocator;
 mod free_extent;

@@ -456,22 +456,30 @@ pub mod windows_utils {
     /// - Device path: \\.\Device\HarddiskVolume1
     ///
     /// Invalid characters: < > : " | ? *
+    /// Note: Colons are allowed only in drive letters (position 1)
     pub fn is_valid_windows_path(path: &str) -> bool {
-        // Check for invalid characters
-        let invalid_chars = ['<', '>', ':', '"', '|', '?', '*'];
+        // UNC paths (\\server\share) and device paths (\\.\Device) are always valid
+        // (assuming no invalid characters)
+        let is_unc_or_device = path.starts_with("\\\\") || path.starts_with("//");
         
-        // Allow colon only in drive letter (second position)
+        // Check for invalid characters
+        let invalid_chars = ['<', '>', '"', '|', '?', '*'];
+        
+        // Handle colon validation
         if let Some(pos) = path.find(':') {
-            if pos != 1 {
+            // Colon is only valid in drive letter position (index 1)
+            // Unless it's a UNC/device path where colons might not appear at all
+            if !is_unc_or_device && pos != 1 {
+                return false;
+            }
+            // For UNC/device paths, colons are generally invalid anywhere
+            if is_unc_or_device {
                 return false;
             }
         }
 
         // Check for other invalid characters
         for &ch in &invalid_chars {
-            if ch == ':' {
-                continue; // Already handled
-            }
             if path.contains(ch) {
                 return false;
             }
@@ -546,11 +554,17 @@ mod tests {
     fn test_windows_path_validation() {
         use windows_utils::is_valid_windows_path;
 
+        // Valid paths
         assert!(is_valid_windows_path("C:\\Users\\test\\file.txt"));
         assert!(is_valid_windows_path("relative\\path"));
+        assert!(is_valid_windows_path("\\\\server\\share\\file.txt")); // UNC path
+        assert!(is_valid_windows_path("\\\\.\\Device\\HarddiskVolume1")); // Device path
+        
+        // Invalid paths
         assert!(!is_valid_windows_path("invalid<file.txt"));
         assert!(!is_valid_windows_path("invalid>file.txt"));
         assert!(!is_valid_windows_path("C:invalid:path.txt")); // Colon not in position 1
+        assert!(!is_valid_windows_path("\\\\server:invalid\\share")); // Colon in UNC path
     }
 
     #[test]

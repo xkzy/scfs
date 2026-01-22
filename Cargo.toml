@@ -36,6 +36,10 @@ criterion = "0.5"
 name = "benchmarks"
 harness = false
 
+[[bench]]
+name = "fs_comparison"
+harness = false
+
 [profile.release]
 lto = true           # Link-time optimization for better performance
 codegen-units = 1    # Better optimization (slower compile)

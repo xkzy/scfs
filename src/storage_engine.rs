@@ -380,9 +380,10 @@ mod tests {
         // Get stats
         let stats = storage.stat().unwrap();
 
-        assert_eq!(stats.total_dirs, 1); // Simplified implementation only counts root
+        // We created 2 directories (dir1, dir2) plus the root directory exists (ino=1)
+        assert!(stats.total_dirs >= 2);
         // total_files and total_size should be non-zero after writes
-        assert!(stats.total_files >= 1);
+        assert!(stats.total_files >= 2); // Created file1.txt and file2.txt
         assert!(stats.total_size >= data1.len() as u64 + data2.len() as u64);
         assert!(stats.free_space > 0);
     }

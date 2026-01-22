@@ -36,11 +36,11 @@ pub enum Commands {
         #[arg(short, long)]
         disk: PathBuf,
 
-        /// Add a raw block device (explicit confirmation required)
+        /// Add a raw block device (REQUIRES ROOT PRIVILEGES - DANGER: will overwrite device!)
         #[arg(long, default_value_t = false)]
         device: bool,
 
-        /// Force adding device even if it appears to be previously formatted
+        /// Force adding device even if it appears to be previously formatted (EXTREME DANGER!)
         #[arg(long, default_value_t = false)]
         force: bool,
     },
@@ -350,6 +350,18 @@ pub enum Commands {
         /// Pool directory
         #[arg(short, long)]
         pool: PathBuf,
+    },
+
+    /// Recover orphaned fragments on raw block devices
+    /// WARNING: Requires root privileges for block device access
+    Recover {
+        /// Pool directory
+        #[arg(short, long)]
+        pool: PathBuf,
+
+        /// Automatically clean up orphaned fragments (irreversible operation!)
+        #[arg(long, default_value = "false")]
+        cleanup: bool,
     },
 }
 

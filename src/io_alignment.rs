@@ -3,9 +3,9 @@
 use anyhow::{Context, Result};
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
 use std::ptr;
 use nix::sys::statvfs;
@@ -254,7 +254,7 @@ pub fn write_aligned_file(path: &Path, data: &[u8], prefer_direct: bool) -> Resu
     let use_direct = prefer_direct && open_with_o_direct(path).is_ok();
 
     if use_direct {
-        let mut f = open_with_o_direct(path)?;
+        let f = open_with_o_direct(path)?;
         let fd = f.as_raw_fd();
         let wrote = pwrite_direct(fd, &buf, 0)?;
         if wrote != write_size {

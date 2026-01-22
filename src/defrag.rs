@@ -1,15 +1,13 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-use crate::disk::{Disk, DiskHealth};
 use crate::extent::Extent;
 use crate::io_scheduler::IoPriority;
-use crate::metadata::MetadataManager;
 use crate::metrics::Metrics;
 use crate::storage::StorageEngine;
 

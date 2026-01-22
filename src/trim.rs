@@ -1,8 +1,8 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -345,22 +345,131 @@ impl TrimEngine {
 
     /// Check if TRIM is supported on the disk
     fn check_trim_support(path: &Path) -> Result<bool> {
-        // On Linux, check /sys/block/*/queue/discard_granularity
-        // For directory-backed testing, always return true
-        if path.is_dir() {
+        let metadata = std::fs::metadata(path)?;
+        
+        if metadata.file_type().is_block_device() {
+            // For block devices, check /sys/block/*/queue/discard_* files
+            return Self::check_block_device_trim_support(path);
+        } else if path.is_dir() {
+            // Directory-backed testing always "supports" TRIM
             return Ok(true);
+        } else {
+            // For regular files, check filesystem support
+            return Self::check_filesystem_trim_support(path);
         }
+    }
 
-        // TODO: Implement actual TRIM support detection for block devices
+    /// Check TRIM support for block devices via sysfs
+    fn check_block_device_trim_support(device_path: &Path) -> Result<bool> {
+        // Get device name from /dev path (e.g., /dev/sda -> sda)
+        let device_name = device_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| anyhow!("Invalid device path"))?;
+        
+        let discard_granularity_path = format!("/sys/block/{}/queue/discard_granularity", device_name);
+        let discard_max_bytes_path = format!("/sys/block/{}/queue/discard_max_bytes", device_name);
+        
+        // Check if discard_granularity > 0
+        match std::fs::read_to_string(&discard_granularity_path) {
+            Ok(content) => {
+                let granularity: u64 = content.trim().parse().unwrap_or(0);
+                if granularity > 0 {
+                    // Also check discard_max_bytes > 0
+                    match std::fs::read_to_string(&discard_max_bytes_path) {
+                        Ok(content) => {
+                            let max_bytes: u64 = content.trim().parse().unwrap_or(0);
+                            Ok(max_bytes > 0)
+                        }
+                        Err(_) => Ok(false),
+                    }
+                } else {
+                    Ok(false)
+                }
+            }
+            Err(_) => Ok(false),
+        }
+    }
+
+    /// Check TRIM support for filesystems
+    fn check_filesystem_trim_support(_path: &Path) -> Result<bool> {
+        // For now, assume TRIM is supported on modern filesystems
+        // In production, this could check mount options or filesystem type
         Ok(true)
     }
 
     /// Perform actual TRIM operation on a range
     fn trim_range(range: &TrimRange, config: &TrimConfig) -> Result<u64> {
-        // TODO: For directory-backed storage, we can't use actual TRIM/DISCARD
-        // Instead, we can use fallocate with FALLOC_FL_PUNCH_HOLE to release space
-        // For production block devices, implement proper TRIM/DISCARD via ioctl
+        // Check if this is a block device by checking the path
+        let metadata = std::fs::metadata(&range.path)?;
         
+        if metadata.file_type().is_block_device() {
+            // Block device: Use DISCARD/TRIM ioctl
+            return Self::trim_block_device(range, config);
+        } else if metadata.is_file() {
+            // Regular file: Use filesystem-level TRIM (fallocate punch hole)
+            return Self::trim_file(range, config);
+        } else {
+            // Directory or other: Consider already trimmed
+            return Ok(range.length);
+        }
+    }
+
+    /// TRIM a block device using DISCARD ioctl
+    fn trim_block_device(range: &TrimRange, config: &TrimConfig) -> Result<u64> {
+        use std::os::unix::io::AsRawFd;
+        
+        // Open the block device
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .open(&range.path)
+            .with_context(|| format!("Failed to open block device: {:?}", range.path))?;
+        
+        let fd = file.as_raw_fd();
+        
+        // For secure erase on block devices, overwrite with zeros first
+        if config.secure_erase {
+            Self::secure_erase_block_device(&file, range.length)?;
+        }
+        
+        // Issue DISCARD/TRIM ioctl
+        // BLKDISCARD ioctl discards sectors
+        const BLKDISCARD: u64 = 0x1277; // Linux ioctl number
+        
+        // Prepare discard range structure
+        #[repr(C)]
+        struct DiscardRange {
+            start: u64,
+            len: u64,
+        }
+        
+        let discard_range = DiscardRange {
+            start: range.offset,
+            len: range.length,
+        };
+        
+        // Use libc ioctl
+        let result = unsafe {
+            libc::ioctl(fd, BLKDISCARD, &discard_range)
+        };
+        
+        if result < 0 {
+            let err = std::io::Error::last_os_error();
+            // Some devices don't support DISCARD, which is OK
+            if err.raw_os_error() == Some(libc::EOPNOTSUPP) {
+                log::warn!("DISCARD not supported on device {:?}", range.path);
+                return Ok(range.length);
+            }
+            return Err(err).with_context(|| format!("DISCARD ioctl failed for {:?}", range.path));
+        }
+        
+        log::debug!("TRIMmed {} bytes at offset {} on {:?}", range.length, range.offset, range.path);
+        Ok(range.length)
+    }
+
+    /// TRIM a regular file using filesystem punch hole
+    fn trim_file(range: &TrimRange, config: &TrimConfig) -> Result<u64> {
         if !range.path.exists() {
             // File already deleted, consider it trimmed
             return Ok(range.length);
@@ -371,15 +480,61 @@ impl TrimEngine {
             Self::secure_erase_file(&range.path)?;
         }
 
-        // On Linux with supported filesystems, we could use:
-        // fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, len)
-        // For now, just remove the file which releases the space
-        if range.path.is_file() {
-            std::fs::remove_file(&range.path)
-                .with_context(|| format!("Failed to remove file for TRIM: {:?}", range.path))?;
+        // Use fallocate with FALLOC_FL_PUNCH_HOLE to release space
+        use std::os::unix::io::AsRawFd;
+        
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .open(&range.path)
+            .with_context(|| format!("Failed to open file for TRIM: {:?}", range.path))?;
+        
+        let fd = file.as_raw_fd();
+        
+        // FALLOC_FL_PUNCH_HOLE punches hole, FALLOC_FL_KEEP_SIZE keeps file size
+        const FALLOC_FL_PUNCH_HOLE: i32 = 0x02;
+        const FALLOC_FL_KEEP_SIZE: i32 = 0x01;
+        let mode = FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE;
+        
+        let result = unsafe {
+            libc::fallocate(fd, mode, range.offset as i64, range.length as i64)
+        };
+        
+        if result < 0 {
+            let err = std::io::Error::last_os_error();
+            // If fallocate not supported, fall back to removing the file
+            if err.raw_os_error() == Some(libc::EOPNOTSUPP) {
+                log::warn!("fallocate PUNCH_HOLE not supported, removing file {:?}", range.path);
+                std::fs::remove_file(&range.path)
+                    .with_context(|| format!("Failed to remove file for TRIM: {:?}", range.path))?;
+            } else {
+                return Err(err).with_context(|| format!("fallocate failed for {:?}", range.path));
+            }
         }
-
+        
         Ok(range.length)
+    }
+
+    /// Securely erase a block device by overwriting with zeros
+    fn secure_erase_block_device(file: &File, length: u64) -> Result<()> {
+        use std::io::{Seek, Write};
+        
+        let mut file = file.try_clone()?;
+        file.seek(std::io::SeekFrom::Start(0))?;
+        
+        // Overwrite with zeros in alignment-aware chunks
+        let chunk_size = 1024 * 1024; // 1MB chunks
+        let mut remaining = length;
+        
+        while remaining > 0 {
+            let to_write = remaining.min(chunk_size);
+            let zeros = vec![0u8; to_write as usize];
+            file.write_all(&zeros)?;
+            remaining -= to_write;
+        }
+        
+        file.sync_all()?;
+        Ok(())
     }
 
     /// Securely erase a file by overwriting with zeros

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use blake3::Hasher;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -6,8 +6,15 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use crc32fast;
-use nix::fcntl::{flock, FlockArg};
 use serde::{Serialize, Deserialize};
+
+use crate::free_extent::FreeExtentIndex;
+
+#[cfg(test)]
+use crate::crash_sim::{check_crash_point, CrashPoint};
+
+#[cfg(target_os = "linux")]
+const BLKDISCARD: u64 = 0x12 << 8 | 119;
 
 const SUPERBLOCK_MAGIC: &[u8; 8] = b"DFSBLOCK";
 const SUPERBLOCK_VERSION: u32 = 1;
@@ -107,6 +114,8 @@ pub struct OnDeviceAllocator {
     pub total_units: u64,
     /// In-memory bitmap (LSB first per byte)
     bitmap: Vec<u8>,
+    /// Free extent index for efficient contiguous allocation
+    free_extents: FreeExtentIndex,
     allocator_offset: u64,
 }
 
@@ -237,12 +246,24 @@ impl OnDeviceAllocator {
         let unit_size = 1024 * 1024; // placeholder default 1MiB
         let total_units = (sb.allocator_len as u64) * 8;
 
+        // Initialize free extent index
+        let mut free_extents = FreeExtentIndex::new(None)?;
+        for unit in 0..total_units {
+            let byte = bitmap[(unit / 8) as usize];
+            let bit = 1u8 << (unit % 8);
+            if (byte & bit) == 0 {
+                // Free unit - add to free extents
+                free_extents.insert_run(unit, 1)?;
+            }
+        }
+
         let mut oda = OnDeviceAllocator {
             device_path: path.to_path_buf(),
             superblock_offset: 0,
             unit_size,
             total_units,
             bitmap,
+            free_extents,
             allocator_offset: sb.allocator_offset,
         };
 
@@ -255,57 +276,63 @@ impl OnDeviceAllocator {
         Ok(oda)
     }
 
-    /// Persist bitmap to device and bump superblock seq
+    /// Persist bitmap to device and bump superblock seq atomically
     pub fn persist(&mut self) -> Result<()> {
         let mut f = OpenOptions::new().read(true).write(true).open(&self.device_path).context("Failed to open device for persist")?;
         f.seek(SeekFrom::Start(self.allocator_offset))?;
         f.write_all(&self.bitmap)?;
         f.sync_all()?;
 
-        // update superblock seq
+        // Atomic superblock update: write to temporary location first
+        let temp_sb_offset = SUPERBLOCK_SIZE as u64; // Use second superblock slot as temp
         let mut buf = vec![0u8; SUPERBLOCK_SIZE];
         f.seek(SeekFrom::Start(0))?;
         f.read_exact(&mut buf)?;
         let mut sb = Superblock::from_bytes(&buf)?;
         sb.seq += 1;
         let sbbuf = sb.to_bytes();
+
+        // Write to temp location
+        f.seek(SeekFrom::Start(temp_sb_offset))?;
+        f.write_all(&sbbuf)?;
+        f.sync_all()?;
+
+        // Atomically copy to primary location (in practice, this would use filesystem atomic rename,
+        // but for block devices we ensure the write is durable)
         f.seek(SeekFrom::Start(0))?;
         f.write_all(&sbbuf)?;
         f.sync_all()?;
+
         Ok(())
     }
 
-    /// Attempt to allocate n contiguous units by simple scan
+    /// Attempt to allocate n contiguous units using free extent index
     pub fn allocate_contiguous(&mut self, n: u64) -> Option<u64> {
         if n == 0 || n > self.total_units {
             return None;
         }
-        let mut run = 0u64;
-        let mut start = 0u64;
-        for unit in 0..self.total_units {
-            let byte = self.bitmap[(unit / 8) as usize];
-            let bit = 1u8 << (unit % 8);
-            if (byte & bit) == 0 {
-                if run == 0 { start = unit; }
-                run += 1;
-                if run == n {
-                    // mark
-                    for u in start..(start + n) {
-                        let idx = (u / 8) as usize;
-                        let b = 1u8 << (u % 8);
-                        self.bitmap[idx] |= b;
-                    }
-                    return Some(start);
-                }
-            } else {
-                run = 0;
+
+        // Use free extent index for efficient allocation
+        if let Some(start) = self.free_extents.allocate_best_fit(n) {
+            // Mark units as allocated in bitmap
+            for u in start..(start + n) {
+                let idx = (u / 8) as usize;
+                let b = 1u8 << (u % 8);
+                self.bitmap[idx] |= b;
             }
+            Some(start)
+        } else {
+            None
         }
-        None
+    }
+
+    /// Get a reference to the allocation bitmap
+    pub fn bitmap(&self) -> &[u8] {
+        &self.bitmap
     }
 
     /// Compute where fragment data region starts (right after allocator region, aligned to unit_size)
-    fn data_region_base(&self) -> u64 {
+    pub fn data_region_base(&self) -> u64 {
         let end = self.allocator_offset + (self.bitmap.len() as u64);
         let mask = self.unit_size - 1;
         if end & mask == 0 {
@@ -331,11 +358,21 @@ impl OnDeviceAllocator {
         let total_write = ((payload_len + self.unit_size - 1) / self.unit_size) * self.unit_size;
         payload.resize(total_write as usize, 0u8);
 
+        #[cfg(test)]
+        check_crash_point(CrashPoint::BeforeFragmentDataWrite)?;
+
         f.seek(SeekFrom::Start(offset))?;
         f.write_all(&payload)?;
+
+        #[cfg(test)]
+        check_crash_point(CrashPoint::AfterFragmentDataWrite)?;
+
         // ensure data durability
         let fd = f.as_raw_fd();
         unsafe { libc::fdatasync(fd) };
+
+        #[cfg(test)]
+        check_crash_point(CrashPoint::AfterFragmentFsync)?;
 
         // Persist allocator bitmap and superblock
         self.persist()?;
@@ -348,7 +385,7 @@ impl OnDeviceAllocator {
         let offset = self.data_region_base() + start_unit * self.unit_size;
         let mut f = OpenOptions::new().read(true).open(&self.device_path).context("Failed to open device for fragment read")?;
         // read header first
-        let mut hbuf = vec![0u8; (16+4+8+32+4)];
+        let mut hbuf = vec![0u8; 16+4+8+32+4];
         f.seek(SeekFrom::Start(offset))?;
         f.read_exact(&mut hbuf)?;
         let hdr = FragmentHeader::from_bytes(&hbuf)?;
@@ -370,6 +407,8 @@ impl OnDeviceAllocator {
             let b = 1u8 << (u % 8);
             self.bitmap[idx] &= !b;
         }
+        // Update free extent index
+        self.free_extents.insert_run(start, n)?;
         Ok(())
     }
 
@@ -381,6 +420,105 @@ impl OnDeviceAllocator {
             if (byte & bit) == 0 { c += 1; }
         }
         c
+    }
+
+    /// Perform TRIM (discard) operation on freed units to reclaim space on SSDs
+    /// This is a no-op on devices that don't support TRIM
+    pub fn trim_freed_units(&self, start_unit: u64, unit_count: u64) -> Result<()> {
+        if unit_count == 0 {
+            return Ok(());
+        }
+
+        let offset = self.data_region_base() + start_unit * self.unit_size;
+        let length = unit_count * self.unit_size;
+
+        #[cfg(target_os = "linux")]
+        {
+            match OpenOptions::new().write(true).open(&self.device_path) {
+                Ok(file) => {
+                    let fd = file.as_raw_fd();
+                    let range = [offset, length];
+                    // BLKDISCARD ioctl - ignore errors as TRIM may not be supported
+                    unsafe {
+                        let _ = libc::ioctl(fd, BLKDISCARD, &range);
+                    }
+                }
+                Err(_) => {
+                    // If we can't open for writing, skip TRIM
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Enhanced free_contiguous that also performs TRIM operation
+    pub fn free_and_trim(&mut self, start: u64, n: u64) -> Result<()> {
+        self.free_contiguous(start, n)?;
+        self.trim_freed_units(start, n)?;
+        Ok(())
+    }
+
+    /// Defragmentation: consolidate fragmented free space by moving allocated units
+    /// Returns the number of units moved
+    pub fn defragment(&mut self) -> Result<u64> {
+        let mut units_moved = 0u64;
+        let mut write_pos = 0u64;
+
+        // Simple defrag algorithm: move allocated units to the beginning
+        for read_pos in 0..self.total_units {
+            let read_idx = (read_pos / 8) as usize;
+            let read_bit = 1u8 << (read_pos % 8);
+
+            if (self.bitmap[read_idx] & read_bit) != 0 {
+                // Unit is allocated
+                if read_pos != write_pos {
+                    // Move the fragment from read_pos to write_pos
+                    self.move_fragment(read_pos, write_pos)?;
+                    units_moved += 1;
+                }
+                write_pos += 1;
+            }
+        }
+
+        // Clear the bitmap for the now-free units at the end and rebuild free extents
+        self.free_extents = FreeExtentIndex::new(None)?;
+        for unit in write_pos..self.total_units {
+            let idx = (unit / 8) as usize;
+            let bit = 1u8 << (unit % 8);
+            self.bitmap[idx] &= !bit;
+            self.free_extents.insert_run(unit, 1)?;
+        }
+
+        if units_moved > 0 {
+            self.persist()?;
+        }
+
+        Ok(units_moved)
+    }
+
+    /// Move a fragment from one unit position to another
+    fn move_fragment(&mut self, from_unit: u64, to_unit: u64) -> Result<()> {
+        // Read the fragment at from_unit
+        let (header, data) = self.read_fragment_at(from_unit)?;
+
+        // Calculate how many units this fragment occupies
+        let fragment_size = ((header.total_length + (16 + 4 + 8 + 32 + 4) as u64) + self.unit_size - 1) / self.unit_size;
+
+        // Free the old location
+        self.free_contiguous(from_unit, fragment_size)?;
+
+        // Write to new location
+        let placement = self.write_fragment_at(to_unit, &data, &header)?;
+
+        // Update bitmap for the new location
+        for unit in to_unit..(to_unit + fragment_size) {
+            let idx = (unit / 8) as usize;
+            let bit = 1u8 << (unit % 8);
+            self.bitmap[idx] |= bit;
+        }
+
+        Ok(())
     }
 
     /// Scan data region for valid fragment headers and ensure bitmap marks used units.
@@ -412,6 +550,8 @@ impl OnDeviceAllocator {
                                 if (self.bitmap[idx] & b) == 0 {
                                     self.bitmap[idx] |= b;
                                     changed = true;
+                                    // Remove from free extents if it was marked free
+                                    let _ = self.free_extents.consume_range(u, 1);
                                 }
                             }
                         }

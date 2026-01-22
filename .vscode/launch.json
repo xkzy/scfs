@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug dynamicfs",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/dynamicfs",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build"
+        },
+        {
+            "name": "Debug Tests",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/deps/dynamicfs-*",
+            "args": ["--test"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build"
+        }
+    ]
+}

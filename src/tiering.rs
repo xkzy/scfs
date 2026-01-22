@@ -11,6 +11,12 @@ pub enum StorageTier {
     Cold,     // Slow, cheap, archive storage
 }
 
+impl Default for StorageTier {
+    fn default() -> Self {
+        StorageTier::Warm
+    }
+}
+
 impl StorageTier {
     pub fn description(&self) -> &'static str {
         match self {

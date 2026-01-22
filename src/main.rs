@@ -14,7 +14,12 @@ mod trim;
 mod reclamation;
 mod io_alignment;
 mod extent;
+#[cfg(not(target_os = "windows"))]
 mod fuse_impl;
+#[cfg(target_os = "windows")]
+mod windows_fs;
+#[cfg(target_os = "macos")]
+mod macos;
 mod gc;
 mod hmm_classifier;
 mod json_output;
@@ -23,8 +28,13 @@ mod metadata;
 mod metadata_tx;
 mod metrics;
 mod monitoring;
+mod storage_engine;
 #[cfg(test)]
 mod phase_1_3_tests;
+
+// Test helpers (timeouts, small utilities) used only by tests
+#[cfg(test)]
+mod test_utils;
 mod perf;
 mod placement;
 mod redundancy;
@@ -42,12 +52,13 @@ mod security;
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use std::fs;
+use std::io::{Read, Seek, Write};
 use std::path::Path;
+use std::sync::Arc;
 
 use cli::{Cli, Commands, ScrubDaemonAction};
 use disk::{Disk, DiskPool};
 use extent::RedundancyPolicy;
-use fuse_impl::DynamicFS;
 use metadata::MetadataManager;
 use metrics::Metrics;
 use storage::StorageEngine;
@@ -102,6 +113,7 @@ fn main() -> Result<()> {
         Commands::SetReclamationPolicy { pool, policy } => cmd_set_reclamation_policy(&pool, &policy, json_output),
         Commands::ReclamationStatus { pool } => cmd_reclamation_status(&pool, json_output),
         Commands::Health { pool } => cmd_health(&pool, json_output),
+        Commands::Recover { pool, cleanup } => cmd_recover(&pool, cleanup, json_output),
     }
 }
 
@@ -395,11 +407,19 @@ fn cmd_remove_disk(pool_dir: &Path, disk_path: &Path, _json_output: bool) -> Res
     disk.mark_draining()?;
     println!("  Marked disk {} as draining", disk.uuid);
     
-    // TODO: Implement actual rebuild process
-    println!("  Note: Rebuild must be triggered separately");
-    
-    // Remove from pool
+    // Trigger rebuild process to ensure data is rebalanced before disk removal completes
+    println!("  Triggering rebuild to migrate fragments off draining disk");
     let mut pool = DiskPool::load(pool_dir)?;
+    let disks = pool.load_disks()?;
+    let metadata = MetadataManager::new(pool_dir.to_path_buf())?;
+    let storage = StorageEngine::with_metrics(metadata, disks.clone(), Arc::new(Metrics::new()));
+    // Attempt a mount-time rebuild which will target extents with missing fragments or drain targets
+    if let Err(e) = storage.perform_mount_rebuild() {
+        log::warn!("Rebuild attempt encountered errors: {}", e);
+        println!("  Warning: automatic rebuild reported errors; manual intervention may be required");
+    }
+
+    // Remove from pool
     pool.remove_disk(disk_path);
     pool.save(pool_dir)?;
     
@@ -733,22 +753,13 @@ fn cmd_mount(pool_dir: &Path, mountpoint: &Path, _json_output: bool) -> Result<(
         log::error!("Mount-time rebuild failed: {}", e);
     }
 
-    let fs = DynamicFS::new(storage);
-    
     println!();
     println!("Mounting...");
     println!("Press Ctrl+C to unmount");
     println!();
     
-    // Mount options
-    let options = vec![
-        fuser::MountOption::FSName("dynamicfs".to_string()),
-        fuser::MountOption::AllowOther,
-        fuser::MountOption::DefaultPermissions,
-    ];
-    
-    fuser::mount2(fs, mountpoint, &options)
-        .context("Failed to mount filesystem")?;
+    // Use cross-platform mounting
+    crate::storage_engine::mount::mount_filesystem(Box::new(storage), mountpoint)?;
     
     Ok(())
 }
@@ -967,6 +978,114 @@ fn cmd_orphan_stats(pool_dir: &Path, _json_output: bool) -> Result<()> {
     Ok(())
 }
 
+fn cmd_recover(pool_dir: &Path, cleanup: bool, _json_output: bool) -> Result<()> {
+    println!("Recovering orphaned fragments on raw block devices...");
+    if cleanup {
+        println!("Cleanup mode: ENABLED - will remove orphaned fragments");
+    }
+    println!();
+
+    let pool = DiskPool::load(pool_dir)?;
+    let mut disks = pool.load_disks()?;
+
+    let mut total_orphaned = 0u64;
+    let mut total_cleaned = 0u64;
+    let mut total_bytes_recovered = 0u64;
+
+    for disk in &mut disks {
+        if let Some(ref mut oda) = disk.on_device_allocator {
+            println!("Checking disk {} ({})...", disk.uuid, disk.path.display());
+
+            // Run reconcile to find orphaned fragments
+            match oda.reconcile_and_persist() {
+                Ok(changed) => {
+                    if changed {
+                        println!("  ✓ Bitmap reconciled and updated");
+                    } else {
+                        println!("  ✓ Bitmap was already consistent");
+                    }
+                }
+                Err(e) => {
+                    println!("  ✗ Failed to reconcile: {}", e);
+                    continue;
+                }
+            }
+
+            // Count orphaned fragments (units marked free but contain valid data)
+            let mut orphaned_fragments = Vec::new();
+            let base = oda.data_region_base();
+            if let Ok(mut f) = std::fs::OpenOptions::new().read(true).open(&disk.path) {
+                for unit in 0..oda.total_units {
+                    let offset = base + unit * oda.unit_size;
+                    let mut hbuf = vec![0u8; 16+4+8+32+4];
+                    if f.seek(std::io::SeekFrom::Start(offset)).is_ok() && f.read_exact(&mut hbuf).is_ok() {
+                        if let Ok(hdr) = crate::on_device_allocator::FragmentHeader::from_bytes(&hbuf) {
+                            let data_len = hdr.total_length as usize;
+                            if data_len <= (oda.unit_size as usize) * 1024 {
+                                let mut data = vec![0u8; data_len];
+                                if f.read_exact(&mut data).is_ok() {
+                                    let ch = blake3::hash(&data);
+                                    if ch.as_bytes() == &hdr.data_checksum {
+                                        // Valid fragment found
+                                        let fragment_total = ((data_len + (16+4+8+32+4) + oda.unit_size as usize - 1) / oda.unit_size as usize) as u64;
+                                        let mut is_orphaned = false;
+                                        for u in unit..(unit + fragment_total) {
+                                            let idx = (u / 8) as usize;
+                                            let b = 1u8 << (u % 8);
+                                            if (oda.bitmap()[idx] & b) == 0 {
+                                                is_orphaned = true;
+                                                break;
+                                            }
+                                        }
+                                        if is_orphaned {
+                                            orphaned_fragments.push((unit, fragment_total, data_len));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !orphaned_fragments.is_empty() {
+                println!("  Found {} orphaned fragments", orphaned_fragments.len());
+                total_orphaned += orphaned_fragments.len() as u64;
+
+                if cleanup {
+                    for (unit, fragment_total, data_len) in &orphaned_fragments {
+                        // Zero out the fragment data
+                        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&disk.path) {
+                            let offset = base + unit * oda.unit_size;
+                            let total_size = (fragment_total * oda.unit_size) as usize;
+                            let zeros = vec![0u8; total_size];
+                            if f.seek(std::io::SeekFrom::Start(offset)).is_ok() && f.write_all(&zeros).is_ok() {
+                                total_cleaned += 1;
+                                total_bytes_recovered += *data_len as u64;
+                            }
+                        }
+                    }
+                    println!("  ✓ Cleaned {} orphaned fragments", orphaned_fragments.len());
+                }
+            } else {
+                println!("  ✓ No orphaned fragments found");
+            }
+        } else {
+            println!("Skipping disk {} - not a raw block device", disk.uuid);
+        }
+    }
+
+    println!();
+    println!("Recovery Summary:");
+    println!("  Orphaned fragments found: {}", total_orphaned);
+    if cleanup {
+        println!("  Fragments cleaned: {}", total_cleaned);
+        println!("  Bytes recovered: {} ({} MB)", total_bytes_recovered, total_bytes_recovered / 1024 / 1024);
+    }
+
+    Ok(())
+}
+
 fn cmd_benchmark(pool_dir: &Path, file_size: usize, operations: usize, json_output: bool) -> Result<()> {
     use crate::perf::{Benchmark, PerfStats};
     
@@ -1174,7 +1293,7 @@ fn cmd_health(pool_dir: &Path, json_output: bool) -> Result<()> {
 
 
 fn cmd_scrub_daemon(action: ScrubDaemonAction, json_output: bool) -> Result<()> {
-    use std::sync::Arc;
+    
     
     match action {
         ScrubDaemonAction::Start { pool, intensity, dry_run } => {

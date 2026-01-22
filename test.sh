@@ -3,6 +3,15 @@
 
 set -e
 
+# Built-in timeout: If TEST_TIMEOUT is set (seconds), re-exec the script under GNU `timeout`.
+# This makes the entire test script fail automatically if it freezes.
+if [ -z "$TEST_WRAPPED_WITH_TIMEOUT" ] && command -v timeout >/dev/null; then
+  export TEST_WRAPPED_WITH_TIMEOUT=1
+  : ${TEST_TIMEOUT:=600} # default 600s (10 minutes)
+  echo "Re-execing under timeout ${TEST_TIMEOUT}s..."
+  exec timeout --preserve-status "${TEST_TIMEOUT}s" "$0" "$@"
+fi
+
 echo "=== DynamicFS Test Suite ==="
 echo
 
@@ -109,6 +118,31 @@ echo "16. Verifying data after disk failure..."
 # Cleanup
 fusermount -u /tmp/dynamicfs_test/mnt || sudo umount /tmp/dynamicfs_test/mnt
 wait $MOUNT_PID 2>/dev/null || true
+
+# Test raw block device support (requires root)
+echo "17. Testing raw block device support..."
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  Running as root, testing block device support..."
+    
+    # Create a loop device for testing
+    LOOP_DEV=$(losetup -f)
+    dd if=/dev/zero of=/tmp/dynamicfs_loop.img bs=1M count=100 2>/dev/null
+    losetup $LOOP_DEV /tmp/dynamicfs_loop.img
+    
+    # Test adding block device
+    $BIN add-disk --pool /tmp/dynamicfs_test/pool --disk $LOOP_DEV --device --force
+    
+    # Test recover command
+    $BIN recover --pool /tmp/dynamicfs_test/pool
+    
+    # Cleanup loop device
+    losetup -d $LOOP_DEV
+    rm -f /tmp/dynamicfs_loop.img
+    
+    echo "  ✓ Block device support works"
+else
+    echo "  Skipping block device tests (not running as root)"
+fi
 
 echo
 echo "=== All Tests Passed! ==="

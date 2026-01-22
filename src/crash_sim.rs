@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use anyhow::{Result, anyhow};
 
 /// Points where power loss can be simulated
@@ -23,6 +23,12 @@ pub enum CrashPoint {
     DuringExtentMap,
     /// During inode save
     DuringInodeSave,
+    /// Before writing fragment data to device
+    BeforeFragmentDataWrite,
+    /// After writing fragment data, before fdatasync
+    AfterFragmentDataWrite,
+    /// After fdatasync, before allocator persist
+    AfterFragmentFsync,
 }
 
 /// Configuration for crash simulation
@@ -53,6 +59,13 @@ impl CrashSimulator {
         self.crash_after_n_ops.store(1, Ordering::SeqCst); // Crash immediately
         self.enabled.store(true, Ordering::SeqCst);
         self.operations_count.store(0, Ordering::SeqCst);
+
+        #[cfg(test)]
+        eprintln!(
+            "[CRASH_SIM DEBUG] enable_at {:?} crash_after={}",
+            point,
+            self.crash_after_n_ops.load(Ordering::SeqCst)
+        );
     }
     
     /// Enable crash after N operations at a specific point
@@ -72,11 +85,27 @@ impl CrashSimulator {
     
     /// Check if we should crash at this point
     pub fn check_crash(&self, point: CrashPoint) -> Result<()> {
+        #[cfg(test)]
+        eprintln!(
+            "[CRASH_SIM DEBUG] check {:?} enabled={}",
+            point,
+            self.enabled.load(Ordering::SeqCst)
+        );
+
         if !self.enabled.load(Ordering::SeqCst) {
             return Ok(());
         }
         
         let target_point = self.crash_point.lock().unwrap();
+        #[cfg(test)]
+        eprintln!(
+            "[CRASH_SIM DEBUG] check {:?} enabled target={:?} ops={} crash_after={}",
+            point,
+            *target_point,
+            self.operations_count.load(Ordering::SeqCst),
+            self.crash_after_n_ops.load(Ordering::SeqCst)
+        );
+
         if *target_point == Some(point) {
             let ops = self.operations_count.fetch_add(1, Ordering::SeqCst) + 1;
             let crash_after = self.crash_after_n_ops.load(Ordering::SeqCst);
@@ -114,75 +143,80 @@ impl Default for CrashSimulator {
     }
 }
 
-// Thread-local crash simulator for testing
-thread_local! {
-    static CRASH_SIM: CrashSimulator = CrashSimulator::new();
-}
+// Global crash simulator shared across threads (tests spawn worker threads during writes)
+static CRASH_SIM: OnceLock<CrashSimulator> = OnceLock::new();
 
-/// Get the thread-local crash simulator
-pub fn get_crash_simulator() -> CrashSimulator {
-    CRASH_SIM.with(|sim| sim.clone())
+/// Get the shared crash simulator
+pub fn get_crash_simulator() -> &'static CrashSimulator {
+    CRASH_SIM.get_or_init(CrashSimulator::new)
 }
 
 /// Check for simulated crash at a specific point
 #[inline]
 pub fn check_crash_point(point: CrashPoint) -> Result<()> {
-    get_crash_simulator().check_crash(point)
+    let res = get_crash_simulator().check_crash(point);
+    #[cfg(test)]
+    if res.is_err() {
+        eprintln!("[CRASH_SIM DEBUG] crash at {:?}", point);
+    }
+    res
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use crate::test_utils::run_with_timeout;
+
     #[test]
     fn test_crash_simulator_basic() {
-        let sim = CrashSimulator::new();
-        
-        // Initially disabled
-        assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_ok());
-        
-        // Enable at specific point
-        sim.enable_at(CrashPoint::BeforeTempWrite);
-        assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_err());
-        assert_eq!(sim.crash_count(), 1);
-        
-        // Different point should not crash
-        assert!(sim.check_crash(CrashPoint::AfterTempWrite).is_ok());
-        assert_eq!(sim.crash_count(), 1);
-        
-        // Disable
-        sim.disable();
-        assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_ok());
+        // Wrap with timeout to guard against unexpected hangs
+        let res = run_with_timeout(2, || {
+            let sim = CrashSimulator::new();
+            // Initially disabled
+            assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_ok());
+            // Enable at specific point
+            sim.enable_at(CrashPoint::BeforeTempWrite);
+            assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_err());
+            assert_eq!(sim.crash_count(), 1);
+            // Different point should not crash
+            assert!(sim.check_crash(CrashPoint::AfterTempWrite).is_ok());
+            assert_eq!(sim.crash_count(), 1);
+            // Disable
+            sim.disable();
+            assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_ok());
+        });
+        assert!(res.is_ok(), "test timed out");
     }
-    
+
     #[test]
     fn test_crash_after_n_operations() {
-        let sim = CrashSimulator::new();
-        
-        // Enable after 3 operations
-        sim.enable_after_n_ops(CrashPoint::BeforeTempWrite, 3);
-        
-        // First two operations should succeed
-        assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_ok());
-        assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_ok());
-        assert_eq!(sim.operation_count(), 2);
-        
-        // Third operation should crash
-        assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_err());
-        assert_eq!(sim.crash_count(), 1);
-        assert_eq!(sim.operation_count(), 3);
+        let res = run_with_timeout(2, || {
+            let sim = CrashSimulator::new();
+            // Enable after 3 operations
+            sim.enable_after_n_ops(CrashPoint::BeforeTempWrite, 3);
+            // First two operations should succeed
+            assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_ok());
+            assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_ok());
+            assert_eq!(sim.operation_count(), 2);
+            // Third operation should crash
+            assert!(sim.check_crash(CrashPoint::BeforeTempWrite).is_err());
+            assert_eq!(sim.crash_count(), 1);
+            assert_eq!(sim.operation_count(), 3);
+        });
+        assert!(res.is_ok(), "test timed out");
     }
-    
+
     #[test]
     fn test_crash_simulator_reset() {
-        let sim = CrashSimulator::new();
-        
-        sim.enable_at(CrashPoint::BeforeRename);
-        assert!(sim.check_crash(CrashPoint::BeforeRename).is_err());
-        assert_eq!(sim.crash_count(), 1);
-        
-        sim.reset();
-        assert!(sim.check_crash(CrashPoint::BeforeRename).is_ok());
-        assert_eq!(sim.crash_count(), 0);
+        let res = run_with_timeout(2, || {
+            let sim = CrashSimulator::new();
+            sim.enable_at(CrashPoint::BeforeRename);
+            assert!(sim.check_crash(CrashPoint::BeforeRename).is_err());
+            assert_eq!(sim.crash_count(), 1);
+            sim.reset();
+            assert!(sim.check_crash(CrashPoint::BeforeRename).is_ok());
+            assert_eq!(sim.crash_count(), 0);
+        });
+        assert!(res.is_ok(), "test timed out");
     }
 }

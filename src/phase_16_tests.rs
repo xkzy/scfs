@@ -551,3 +551,53 @@ fn test_xattr_special_characters() {
     let inode = fs.storage.get_inode(ino).unwrap();
     assert_eq!(inode.get_xattr("user.special").unwrap(), special_value);
 }
+
+// ===== macOS-specific Tests =====
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_macos_xattr_support() {
+    use crate::macos::{MacOSHandler, xattr_names};
+
+    let handler = MacOSHandler::new();
+
+    // Test resource fork xattr
+    let result = handler.handle_xattr(xattr_names::RESOURCE_FORK, Some(b"resource data"));
+    assert!(result.is_ok());
+
+    // Test Finder info xattr
+    let finder_info = [0u8; 32];
+    let result = handler.handle_xattr(xattr_names::FINDER_INFO, Some(&finder_info));
+    assert!(result.is_ok());
+
+    // Test invalid Finder info size
+    let invalid_finder_info = [0u8; 16]; // Wrong size
+    let result = handler.handle_xattr(xattr_names::FINDER_INFO, Some(&invalid_finder_info));
+    assert!(result.is_err());
+
+    // Test Spotlight metadata
+    let metadata = vec![0u8; 1000];
+    let result = handler.handle_xattr(xattr_names::METADATA, Some(&metadata));
+    assert!(result.is_ok());
+
+    // Test oversized resource fork
+    let large_resource = vec![0u8; 20 * 1024 * 1024]; // 20MB, over limit
+    let result = handler.handle_xattr(xattr_names::RESOURCE_FORK, Some(&large_resource));
+    assert!(result.is_err());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_macos_default_xattrs() {
+    use crate::macos::default_macos_xattrs;
+
+    let file_xattrs = default_macos_xattrs("file");
+    assert!(!file_xattrs.is_empty());
+
+    let dir_xattrs = default_macos_xattrs("directory");
+    assert!(!dir_xattrs.is_empty());
+
+    // Check that Finder info is included
+    let has_finder_info = file_xattrs.iter().any(|(k, _)| k == "com.apple.FinderInfo");
+    assert!(has_finder_info);
+}

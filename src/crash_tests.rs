@@ -26,7 +26,7 @@ fn test_crash_before_inode_temp_write() {
 }
 
 #[test]
-#[ignore] // Thread-local crash simulator state isolation issue
+#[ignore]
 fn test_crash_after_temp_write_before_rename() {
     // TODO: Fix crash simulator to work across module boundaries
     // The thread-local get_crash_simulator() returns different instances
@@ -153,7 +153,7 @@ fn test_crash_during_extent_map_save() {
 }
 
 #[test]
-#[ignore] // Thread-local state isolation issue
+#[ignore]
 fn test_multiple_operations_with_crash() {
     let (_pool_dir, _disk_dirs, metadata, disks) = setup_test_env();
     let storage = StorageEngine::new(metadata, disks);
@@ -204,7 +204,7 @@ fn test_recovery_cleans_temp_files() {
 fn test_atomic_rename_guarantees() {
     let (_pool_dir, _disk_dirs, metadata, disks) = setup_test_env();
     let storage = StorageEngine::new(metadata, disks);
-    
+
     // Create a file with initial data
     let inode = storage.create_file(1, "atomic.txt".to_string()).unwrap();
     let initial_data = b"version 1";
@@ -231,7 +231,7 @@ fn test_atomic_rename_guarantees() {
 }
 
 #[test]
-#[ignore] // Thread-local state isolation issue
+#[ignore]
 fn test_write_verify_crash_consistency() {
     let (_pool_dir, _disk_dirs, metadata, disks) = setup_test_env();
     let storage = StorageEngine::new(metadata, disks);

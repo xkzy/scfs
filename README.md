@@ -186,6 +186,19 @@ Extents are automatically classified based on access patterns:
 cargo build --release
 ```
 
+### Running tests
+
+Use the wrapper script to run `cargo test` under an overall timeout (default 300s) so hangs cause an automatic failure:
+
+```bash
+# default timeout: 300 seconds
+./run_tests.sh
+# or override timeout
+TEST_TIMEOUT=600 ./run_tests.sh
+```
+
+You can still run `cargo test` directly, but it won't enforce a timeout.
+
 ### Initialize Storage Pool
 
 ```bash

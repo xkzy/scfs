@@ -1,15 +1,50 @@
-use crate::extent::{Extent, RedundancyPolicy};
+//! Adaptive tuning utilities for SCFS.
+//!
+//! This module implements lightweight heuristics and data structures used to
+//! adapt filesystem behavior at runtime. It includes:
+//! - `SequenceDetector` — detects sequential read patterns to drive read-ahead.
+//! - `DynamicExtentSizer` — adjusts preferred extent sizes based on observed
+//!   access patterns.
+//! - `WorkloadCache` — classifies extents as hot or cold using simple counters.
+//! - `AdaptiveEngine` — combines components into a single runtime engine.
+//!
+//! # Examples
+//! ```rust
+//! # use crate::adaptive::SequenceDetector;
+//! let mut det = SequenceDetector::new(8 * 1024, 20);
+//! det.record_access(0);
+//! det.record_access(4096);
+//! assert!(det.is_sequential());
+//! ```
+//!
+//! Module docs are intentionally concise; prefer unit tests for behavioral guarantees.
+
+use crate::extent::RedundancyPolicy;
 use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-/// Detects sequential access patterns for read-ahead optimization
+/// Detects sequential access patterns for read-ahead optimization.
+///
+/// This lightweight detector records recent read offsets (with epoch seconds)
+/// and determines whether recent accesses form a sequential pattern suitable
+/// for read-ahead. The detector uses a conservative `max_gap` to tolerate
+/// small variances between successive accesses.
+///
+/// # Example
+/// ```rust
+/// # use crate::adaptive::SequenceDetector;
+/// let mut det = SequenceDetector::new(8192, 20);
+/// det.record_access(0);
+/// det.record_access(4096);
+/// assert!(det.is_sequential());
+/// ```
 pub struct SequenceDetector {
-    /// Max offset gap to consider sequential
+    /// Max offset gap to consider sequential (bytes).
     pub max_gap: u64,
-    /// Recent access history
+    /// Recent access history: (offset, timestamp) where timestamp is seconds since UNIX_EPOCH.
     history: Vec<(u64, u64)>, // (offset, timestamp)
-    /// Maximum history size
+    /// Maximum history size.
     max_history: usize,
 }
 
@@ -82,9 +117,13 @@ pub struct DynamicExtentSizer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Observed access pattern categories used by `DynamicExtentSizer`.
 pub enum AccessPattern {
+    /// Sequential access (good for larger extents).
     Sequential,
+    /// Random access (no strong size preference).
     Random,
+    /// Sparse access (good for smaller extents).
     Sparse,
 }
 
@@ -235,7 +274,22 @@ impl WorkloadCache {
     }
 }
 
-/// Adaptive tuning engine combining all optimization strategies
+/// Adaptive tuning engine combining the detector, sizer and cache components.
+///
+/// This convenience wrapper bundles the adaptive subsystems and exposes a
+/// small surface for recording activity and collecting recommendations that
+/// higher-level code (e.g., the IO path or background daemons) can use.
+///
+/// # Example
+/// ```rust
+/// # use crate::adaptive::AdaptiveEngine;
+/// # use uuid::Uuid;
+/// let mut engine = AdaptiveEngine::new(65536);
+/// let id = Uuid::new_v4();
+/// engine.record_extent_access(id, 0);
+/// engine.update_classifications();
+/// let policy = engine.recommend_redundancy(1024);
+/// ```
 pub struct AdaptiveEngine {
     pub sequence_detector: SequenceDetector,
     pub extent_sizer: DynamicExtentSizer,

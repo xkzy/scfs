@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use uuid::Uuid;
 
 /// System-wide metrics collection
 #[derive(Debug, Clone)]
@@ -47,6 +46,17 @@ pub struct Metrics {
     pub defrag_bytes_moved: Arc<AtomicU64>,
     pub trim_operations: Arc<AtomicU64>,
     pub trim_bytes_reclaimed: Arc<AtomicU64>,
+
+    // Phase 18.4: Raw block device metrics
+    pub device_io_reads: Arc<AtomicU64>,
+    pub device_io_writes: Arc<AtomicU64>,
+    pub device_io_read_bytes: Arc<AtomicU64>,
+    pub device_io_write_bytes: Arc<AtomicU64>,
+    pub device_alignment_failures: Arc<AtomicU64>,
+    pub device_trim_operations: Arc<AtomicU64>,
+    pub device_trim_bytes: Arc<AtomicU64>,
+    pub scrub_progress_extents: Arc<AtomicU64>,
+    pub scrub_progress_bytes: Arc<AtomicU64>,
 }
 
 impl Metrics {
@@ -89,6 +99,17 @@ impl Metrics {
             defrag_bytes_moved: Arc::new(AtomicU64::new(0)),
             trim_operations: Arc::new(AtomicU64::new(0)),
             trim_bytes_reclaimed: Arc::new(AtomicU64::new(0)),
+
+            // Phase 18.4: Raw block device metrics
+            device_io_reads: Arc::new(AtomicU64::new(0)),
+            device_io_writes: Arc::new(AtomicU64::new(0)),
+            device_io_read_bytes: Arc::new(AtomicU64::new(0)),
+            device_io_write_bytes: Arc::new(AtomicU64::new(0)),
+            device_alignment_failures: Arc::new(AtomicU64::new(0)),
+            device_trim_operations: Arc::new(AtomicU64::new(0)),
+            device_trim_bytes: Arc::new(AtomicU64::new(0)),
+            scrub_progress_extents: Arc::new(AtomicU64::new(0)),
+            scrub_progress_bytes: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -177,6 +198,32 @@ impl Metrics {
         contentions as f64 / acquisitions as f64
     }
 
+    // Phase 18.4: Raw block device metric recording
+
+    pub fn record_device_io_read(&self, bytes: u64) {
+        self.device_io_reads.fetch_add(1, Ordering::Relaxed);
+        self.device_io_read_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn record_device_io_write(&self, bytes: u64) {
+        self.device_io_writes.fetch_add(1, Ordering::Relaxed);
+        self.device_io_write_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn record_device_alignment_failure(&self) {
+        self.device_alignment_failures.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_device_trim(&self, bytes: u64) {
+        self.device_trim_operations.fetch_add(1, Ordering::Relaxed);
+        self.device_trim_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub fn update_scrub_progress(&self, extents: u64, bytes: u64) {
+        self.scrub_progress_extents.store(extents, Ordering::Relaxed);
+        self.scrub_progress_bytes.store(bytes, Ordering::Relaxed);
+    }
+
     /// Get snapshot of all metrics
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -209,6 +256,15 @@ impl Metrics {
             defrag_bytes_moved: self.defrag_bytes_moved.load(Ordering::Relaxed),
             trim_operations: self.trim_operations.load(Ordering::Relaxed),
             trim_bytes_reclaimed: self.trim_bytes_reclaimed.load(Ordering::Relaxed),
+            device_io_reads: self.device_io_reads.load(Ordering::Relaxed),
+            device_io_writes: self.device_io_writes.load(Ordering::Relaxed),
+            device_io_read_bytes: self.device_io_read_bytes.load(Ordering::Relaxed),
+            device_io_write_bytes: self.device_io_write_bytes.load(Ordering::Relaxed),
+            device_alignment_failures: self.device_alignment_failures.load(Ordering::Relaxed),
+            device_trim_operations: self.device_trim_operations.load(Ordering::Relaxed),
+            device_trim_bytes: self.device_trim_bytes.load(Ordering::Relaxed),
+            scrub_progress_extents: self.scrub_progress_extents.load(Ordering::Relaxed),
+            scrub_progress_bytes: self.scrub_progress_bytes.load(Ordering::Relaxed),
         }
     }
 }
@@ -253,6 +309,16 @@ pub struct MetricsSnapshot {
     pub defrag_bytes_moved: u64,
     pub trim_operations: u64,
     pub trim_bytes_reclaimed: u64,
+    // Phase 18.4: Raw block device metrics
+    pub device_io_reads: u64,
+    pub device_io_writes: u64,
+    pub device_io_read_bytes: u64,
+    pub device_io_write_bytes: u64,
+    pub device_alignment_failures: u64,
+    pub device_trim_operations: u64,
+    pub device_trim_bytes: u64,
+    pub scrub_progress_extents: u64,
+    pub scrub_progress_bytes: u64,
 }
 
 impl MetricsSnapshot {

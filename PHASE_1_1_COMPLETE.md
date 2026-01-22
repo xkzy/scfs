@@ -387,7 +387,7 @@ println!("Deleted {} old root versions", deleted);
 - Comprehensive tests
 - Documentation
 
-### In Progress ⏳
+### In Progress
 - Integration with existing metadata
 - Copy-on-write objects
 - End-to-end testing

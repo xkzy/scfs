@@ -38,7 +38,7 @@ impl BitmapAllocator {
             return Err(anyhow!("unit_size must be > 0"));
         }
         let bytes = ((total_units + 7) / 8) as usize;
-        let mut bitmap = vec![0u8; bytes];
+        let bitmap = vec![0u8; bytes];
 
         let allocator = BitmapAllocator {
             unit_size,
@@ -82,7 +82,7 @@ impl BitmapAllocator {
 
     /// Persist allocator to disk atomically (write to .tmp then rename)
     pub fn save(&self, path: &Path) -> Result<()> {
-        let mut tmp = path.with_extension("bin.tmp");
+        let tmp = path.with_extension("bin.tmp");
         let mut file = fs::File::create(&tmp).context("Failed to create tmp allocator file")?;
         file.write_all(MAGIC)?;
         file.write_all(&VERSION.to_le_bytes())?;

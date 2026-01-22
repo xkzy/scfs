@@ -65,7 +65,7 @@ pub struct Inode {
 impl Inode {
     pub fn new_file(ino: u64, parent_ino: u64, name: String) -> Self {
         let now = chrono::Utc::now().timestamp();
-        Inode {
+        let inode = Inode {
             ino,
             parent_ino,
             file_type: FileType::RegularFile,
@@ -80,12 +80,23 @@ impl Inode {
             xattrs: None,
             acl: None,
             checksum: None,
+        };
+
+        // Add default macOS xattrs
+        #[cfg(target_os = "macos")]
+        {
+            use crate::macos::default_macos_xattrs;
+            for (key, value) in default_macos_xattrs("file") {
+                inode.set_xattr(key, value);
+            }
         }
+
+        inode
     }
     
     pub fn new_dir(ino: u64, parent_ino: u64, name: String) -> Self {
         let now = chrono::Utc::now().timestamp();
-        Inode {
+        let inode = Inode {
             ino,
             parent_ino,
             file_type: FileType::Directory,
@@ -100,7 +111,18 @@ impl Inode {
             xattrs: None,
             acl: None,
             checksum: None,
+        };
+
+        // Add default macOS xattrs
+        #[cfg(target_os = "macos")]
+        {
+            use crate::macos::default_macos_xattrs;
+            for (key, value) in default_macos_xattrs("directory") {
+                inode.set_xattr(key, value);
+            }
         }
+
+        inode
     }
     
     /// Get extended attribute
@@ -267,25 +289,41 @@ impl MetadataManager {
         let temp_path = path.with_extension("tmp");
         
         #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_inode {:?} BeforeTempWrite", inode.ino);
+        #[cfg(test)]
         check_crash_point(CrashPoint::BeforeTempWrite)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_inode {:?} writing temp", inode.ino);
         fs::write(&temp_path, &contents)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_inode {:?} AfterTempWrite", inode.ino);
         #[cfg(test)]
         check_crash_point(CrashPoint::AfterTempWrite)?;
         
         // In production, we'd fsync here
         // For testing, we simulate the crash point
         #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_inode {:?} BeforeRename", inode.ino);
+        #[cfg(test)]
         check_crash_point(CrashPoint::BeforeRename)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_inode {:?} renaming", inode.ino);
         fs::rename(&temp_path, &path)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_inode {:?} AfterRename", inode.ino);
         #[cfg(test)]
         check_crash_point(CrashPoint::AfterRename)?;
 
         // Also update persisted btree index
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_inode {:?} inserting to btree", inode.ino);
         let _ = self.inode_table.insert(inode.ino, inode_with_checksum);
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_inode {:?} done", inode.ino);
         Ok(())
     }
     
@@ -357,16 +395,26 @@ impl MetadataManager {
         let temp_path = path.with_extension("tmp");
         
         #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent {:?} DuringExtentMetadata", extent.uuid);
+        #[cfg(test)]
         check_crash_point(CrashPoint::DuringExtentMetadata)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent {:?} writing temp", extent.uuid);
         fs::write(&temp_path, &contents)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent {:?} AfterTempWrite", extent.uuid);
         #[cfg(test)]
         check_crash_point(CrashPoint::AfterTempWrite)?;
         
         #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent {:?} BeforeRename", extent.uuid);
+        #[cfg(test)]
         check_crash_point(CrashPoint::BeforeRename)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent {:?} renaming", extent.uuid);
         fs::rename(&temp_path, &path)?;
         Ok(())
     }
@@ -412,20 +460,34 @@ impl MetadataManager {
         let temp_path = path.with_extension("tmp");
         
         #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent_map ino={} DuringExtentMap", map.ino);
+        #[cfg(test)]
         check_crash_point(CrashPoint::DuringExtentMap)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent_map ino={} writing temp", map.ino);
         fs::write(&temp_path, &contents)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent_map ino={} AfterTempWrite", map.ino);
         #[cfg(test)]
         check_crash_point(CrashPoint::AfterTempWrite)?;
         
         #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent_map ino={} BeforeRename", map.ino);
+        #[cfg(test)]
         check_crash_point(CrashPoint::BeforeRename)?;
         
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent_map ino={} renaming", map.ino);
         fs::rename(&temp_path, &path)?;
         
         // update persisted extent map table
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent_map ino={} inserting to btree", map.ino);
         let _ = self.extent_map_table.insert(map.ino, map_with_checksum);
+        #[cfg(test)]
+        eprintln!("[METADATA DEBUG] save_extent_map ino={} done", map.ino);
         Ok(())
     }
     

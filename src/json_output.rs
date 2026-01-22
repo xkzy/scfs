@@ -1,5 +1,4 @@
 use serde_json::json;
-use std::collections::HashMap;
 
 /// JSON output formatter for CLI commands
 pub struct JsonOutput;

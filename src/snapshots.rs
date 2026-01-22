@@ -3,7 +3,6 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use crate::extent::Extent;
-use crate::metadata::Inode;
 
 /// Represents a point-in-time snapshot of filesystem state
 #[derive(Debug, Clone, Serialize, Deserialize)]

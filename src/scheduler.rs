@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::cmp::Ordering;
 use uuid::Uuid;
 
 use crate::disk::{Disk, DiskHealth};
@@ -24,16 +23,16 @@ impl ReplicaSelector {
     /// Select best replica fragment for reading based on strategy
     pub fn select_replica(
         extent: &Extent,
-        disks: &[Disk],
+        disks: &[&Disk],
         strategy: ReplicaSelectionStrategy,
     ) -> Option<(Uuid, usize)> {
         // Find all readable replicas
         let mut candidates: Vec<(Uuid, usize)> = Vec::new();
 
         for location in &extent.fragment_locations {
-            if let Some(disk) = disks.iter().find(|d| d.uuid == location.disk_uuid) {
+            if let Some(disk) = disks.iter().find(|d| (**d).uuid == location.disk_uuid) {
                 // Only select from healthy/degraded disks (never failed)
-                if disk.health != DiskHealth::Failed {
+                if (**disk).health != DiskHealth::Failed {
                     candidates.push((location.disk_uuid, location.fragment_index));
                 }
             }
@@ -58,7 +57,7 @@ impl ReplicaSelector {
 
     /// Select replica on disk with least usage
     fn select_least_loaded(
-        disks: &[Disk],
+        disks: &[&Disk],
         candidates: &[(Uuid, usize)],
     ) -> Option<(Uuid, usize)> {
         candidates
@@ -67,23 +66,23 @@ impl ReplicaSelector {
             .min_by_key(|(disk_uuid, _)| {
                 disks
                     .iter()
-                    .find(|d| d.uuid == *disk_uuid)
-                    .map(|d| d.used_bytes)
+                    .find(|d| (**d).uuid == *disk_uuid)
+                    .map(|d| (**d).used_bytes)
                     .unwrap_or(u64::MAX)
             })
     }
 
     /// Select replica considering both health and load
     fn select_smart(
-        disks: &[Disk],
+        disks: &[&Disk],
         candidates: &[(Uuid, usize)],
     ) -> Option<(Uuid, usize)> {
         let mut best: Option<(Uuid, usize, i32)> = None;
 
         for &(disk_uuid, fragment_index) in candidates {
-            if let Some(disk) = disks.iter().find(|d| d.uuid == disk_uuid) {
+            if let Some(disk) = disks.iter().find(|d| (**d).uuid == disk_uuid) {
                 // Score based on: health (primary) + load (secondary)
-                let health_score = match disk.health {
+                let health_score = match (**disk).health {
                     DiskHealth::Healthy => 100,
                     DiskHealth::Degraded => 50,
                     DiskHealth::Suspect => 25,
@@ -92,9 +91,9 @@ impl ReplicaSelector {
                 };
 
                 // Load score: lower is better (normalize to 0-100)
-                let capacity = disk.capacity_bytes.max(1);
+                let capacity = (**disk).capacity_bytes.max(1);
                 let load_score =
-                    100 - ((disk.used_bytes as f64 / capacity as f64 * 100.0) as i32).min(100);
+                    100 - (((**disk).used_bytes as f64 / capacity as f64 * 100.0) as i32).min(100);
 
                 // Combined score: health weighted 3x, load weighted 1x
                 let score = health_score * 3 + load_score;
@@ -134,10 +133,13 @@ impl FragmentReadScheduler {
         let mut current_batch = Vec::new();
         let mut disk_load: std::collections::HashMap<Uuid, usize> = std::collections::HashMap::new();
 
+        // Create references for the selector
+        let disk_refs: Vec<&Disk> = disks.iter().collect();
+
         // For each fragment, select best replica
         for i in 0..extent.redundancy.fragment_count() {
             if let Some((replica_disk, replica_idx)) =
-                ReplicaSelector::select_replica(extent, disks, strategy)
+                ReplicaSelector::select_replica(extent, &disk_refs, strategy)
             {
                 // Check if we can add to current batch (different disks preferred)
                 let disk_count = disk_load.entry(replica_disk).or_insert(0);

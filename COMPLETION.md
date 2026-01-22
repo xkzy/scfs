@@ -184,7 +184,7 @@ list-hot, list-cold, extent-stats, policy-status
 - [x] Crash-safe operations
 - [x] Orphan detection and cleanup
 
-### ⏳ Should-Have (Next Phase)
+### Should-Have (Next Phase)
 - [ ] Structured JSON logging
 - [ ] Prometheus metrics export
 - [ ] Performance benchmarks

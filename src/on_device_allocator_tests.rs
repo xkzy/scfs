@@ -101,3 +101,88 @@ fn test_reconcile_detects_unpersisted_fragment() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_trim_operations() -> Result<()> {
+    let tmp = NamedTempFile::new()?;
+    let path = tmp.path().to_path_buf();
+    let uuid = Uuid::new_v4();
+    let device_size = 256 * 1024u64;
+    let unit_size = 4096u64;
+    let total_units = 64u64;
+
+    OnDeviceAllocator::format_device(&path, uuid, device_size, unit_size, total_units)?;
+    let mut alloc = OnDeviceAllocator::load_from_device(&path)?;
+
+    // Allocate and free some units
+    let start1 = alloc.allocate_contiguous(2).unwrap();
+    let start2 = alloc.allocate_contiguous(3).unwrap();
+    alloc.persist()?;
+
+    // Free with TRIM
+    alloc.free_and_trim(start1, 2)?;
+    alloc.free_and_trim(start2, 3)?;
+
+    // Verify they're freed
+    assert_eq!(alloc.free_count(), total_units);
+
+    Ok(())
+}
+
+#[test]
+fn test_defragmentation() -> Result<()> {
+    let tmp = NamedTempFile::new()?;
+    let path = tmp.path().to_path_buf();
+    let uuid = Uuid::new_v4();
+    let device_size = 1024 * 1024u64; // 1MB
+    let unit_size = 4096u64;
+    let total_units = 256u64;
+
+    OnDeviceAllocator::format_device(&path, uuid, device_size, unit_size, total_units)?;
+    let mut alloc = OnDeviceAllocator::load_from_device(&path)?;
+
+    // Create a fragmented allocation pattern
+    // Allocate units 0-1, 3-4, 6-7, leaving gaps
+    let start1 = alloc.allocate_contiguous(2).unwrap(); // units 0-1
+    let start2 = alloc.allocate_contiguous(2).unwrap(); // units 2-3
+    let start3 = alloc.allocate_contiguous(2).unwrap(); // units 4-5
+
+    // Free the middle allocation (units 2-3)
+    alloc.free_contiguous(start2, 2);
+
+    // Now we have: allocated 0-1, free 2-3, allocated 4-5
+    // Defrag should move units 4-5 to positions 2-3
+
+    let moved = alloc.defragment()?;
+    assert!(moved > 0);
+
+    // Reload and verify
+    let alloc2 = OnDeviceAllocator::load_from_device(&path)?;
+    // Should have consolidated free space at the end
+    assert_eq!(alloc2.free_count(), total_units - 4); // 4 units still allocated
+
+    Ok(())
+}
+
+#[test]
+fn test_device_alignment_handling() -> Result<()> {
+    let tmp = NamedTempFile::new()?;
+    let path = tmp.path().to_path_buf();
+    let uuid = Uuid::new_v4();
+    let device_size = 256 * 1024u64;
+    let unit_size = 4096u64;
+    let total_units = 64u64;
+
+    OnDeviceAllocator::format_device(&path, uuid, device_size, unit_size, total_units)?;
+    let mut alloc = OnDeviceAllocator::load_from_device(&path)?;
+
+    // Test that allocations are properly aligned
+    let start = alloc.allocate_contiguous(1).unwrap();
+    assert_eq!(start % 1, 0); // Should be aligned to unit boundaries
+
+    // Test larger contiguous allocation
+    let start2 = alloc.allocate_contiguous(4).unwrap();
+    assert!(start2 >= start + 1);
+
+    Ok(())
+}

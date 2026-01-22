@@ -1,5 +1,4 @@
 use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
 
 /// Filesystem configuration with sensible defaults
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use uuid::Uuid;
 
 use crate::disk::Disk;
@@ -72,7 +72,15 @@ impl Scrubber {
 
         for location in &extent.fragment_locations {
             if let Some(disk) = disks.iter().find(|d| d.uuid == location.disk_uuid) {
-                match disk.read_fragment(&extent.uuid, location.fragment_index) {
+                let data_result = if let Some(ref placement) = location.on_device {
+                    // Block device: use placement information
+                    disk.read_fragment_at_placement(placement)
+                } else {
+                    // Regular disk: use file-based reading
+                    disk.read_fragment(&extent.uuid, location.fragment_index)
+                };
+
+                match data_result {
                     Ok(data) => {
                         fragments[location.fragment_index] = Some(data);
                         readable_count += 1;
@@ -147,22 +155,22 @@ impl Scrubber {
 
         result.repairs_attempted += 1;
 
-        // Attempt rebuild
-        match placement.rebuild_extent(extent, disks, fragments) {
-            Ok(()) => {
-                // Persist the repaired extent
-                metadata.save_extent(extent)?;
+        // Use placement engine's rebuild_extent method for repair
+        // Convert disks to Arc<Mutex<Disk>> format expected by placement engine
+        let disk_arcs: Vec<std::sync::Arc<std::sync::Mutex<Disk>>> = 
+            disks.iter_mut().map(|d| std::sync::Arc::new(std::sync::Mutex::new(d.clone()))).collect();
+        
+        match placement.rebuild_extent(extent, &disk_arcs, fragments) {
+            Ok(_) => {
                 result.repairs_successful += 1;
                 result.status = ScrubStatus::Repaired;
-                log::info!(
-                    "Successfully repaired extent {} (now {} fragments)",
-                    extent.uuid,
-                    extent.fragment_locations.len()
-                );
+                result.issues.push("Successfully repaired extent".to_string());
+                log::info!("Successfully repaired extent {}", extent.uuid);
             }
             Err(e) => {
-                result.issues.push(format!("Repair attempt failed: {}", e));
-                log::warn!("Failed to repair extent {}: {}", extent.uuid, e);
+                result.issues.push(format!("Repair failed: {}", e));
+                result.status = ScrubStatus::Degraded;
+                log::warn!("Repair attempted but failed for extent {}: {}", extent.uuid, e);
             }
         }
 

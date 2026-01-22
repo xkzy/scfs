@@ -1,29 +1,53 @@
-use anyhow::Result;
+#![cfg(not(target_os = "windows"))]
+
+//! FUSE filesystem implementation for Unix-like systems (Linux, macOS)
+//!
+//! This module provides FUSE-based filesystem support using the fuser crate.
+//! It implements the fuser::Filesystem trait to provide POSIX-compatible
+//! filesystem operations.
+
+#[cfg(not(target_os = "windows"))]
 use fuser::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory, ReplyEntry,
     ReplyWrite, Request, TimeOrNow, ReplyXattr, ReplyLock, ReplyOpen,
 };
-use libc::{EEXIST, ENOENT, ENOTDIR, ENODATA, ERANGE, ENOSYS, EOPNOTSUPP};
+#[cfg(not(target_os = "windows"))]
+use libc::{EEXIST, ENOENT, ENOTDIR, ENODATA, ERANGE, ENOSYS};
+#[cfg(not(target_os = "windows"))]
 use std::ffi::OsStr;
+#[cfg(not(target_os = "windows"))]
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_os = "windows"))]
 use crate::metadata::FileType as InodeFileType;
-use crate::storage::StorageEngine;
+#[cfg(not(target_os = "windows"))]
+use crate::storage_engine::FilesystemInterface;
+#[cfg(not(target_os = "windows"))]
 use crate::file_locks::{LockManager, FileLock, LockType};
+#[cfg(target_os = "macos")]
+use crate::macos::MacOSHandler;
 
+#[cfg(not(target_os = "windows"))]
 const MAX_XATTR_SIZE: usize = 64 * 1024; // 64KB max xattr size
+#[cfg(not(target_os = "windows"))]
 const MAX_XATTR_NAME: usize = 255;
 
+#[cfg(not(target_os = "windows"))]
 pub struct DynamicFS {
-    pub(crate) storage: StorageEngine,
+    pub(crate) storage: Box<dyn FilesystemInterface + Send + Sync>,
     pub(crate) lock_manager: LockManager,
+    #[cfg(target_os = "macos")]
+    pub(crate) macos_handler: MacOSHandler,
 }
 
+#[cfg(not(target_os = "windows"))]
 impl DynamicFS {
-    pub fn new(storage: StorageEngine) -> Self {
+    pub fn new(storage: Box<dyn FilesystemInterface + Send + Sync>) -> Self {
         DynamicFS { 
             storage,
             lock_manager: LockManager::new(),
+            #[cfg(target_os = "macos")]
+            macos_handler: MacOSHandler::new(),
         }
     }
     
@@ -494,6 +518,14 @@ impl Filesystem for DynamicFS {
             return;
         }
         
+        // macOS-specific xattr handling
+        #[cfg(target_os = "macos")]
+        if let Err(e) = self.macos_handler.handle_xattr(name_str, Some(value)) {
+            log::error!("macOS xattr validation failed: {}", e);
+            reply.error(libc::EINVAL);
+            return;
+        }
+        
         // Get inode
         let mut inode = match self.storage.get_inode(ino) {
             Ok(i) => i,
@@ -534,6 +566,14 @@ impl Filesystem for DynamicFS {
                 return;
             }
         };
+        
+        // macOS-specific xattr handling
+        #[cfg(target_os = "macos")]
+        if let Err(e) = self.macos_handler.handle_xattr(name_str, None) {
+            log::error!("macOS xattr validation failed: {}", e);
+            reply.error(libc::EINVAL);
+            return;
+        }
         
         // Get inode
         let inode = match self.storage.get_inode(ino) {

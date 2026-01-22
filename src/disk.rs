@@ -3,10 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use uuid::Uuid;
 
 #[cfg(test)]
 use crate::crash_sim::{check_crash_point, CrashPoint};
+
+use crate::tiering::StorageTier;
 
 /// Represents a storage disk (backed by a directory)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +22,9 @@ pub struct Disk {
     /// Kind of backing (directory or block device)
     #[serde(default)]
     pub kind: DiskKind,
+    /// Storage tier classification
+    #[serde(default)]
+    pub tier: StorageTier,
 
     /// In-memory allocator and index (not serialized)
     #[serde(skip)]
@@ -28,6 +34,12 @@ pub struct Disk {
     #[serde(skip)]
     /// On-device allocator (for block devices)
     pub on_device_allocator: Option<crate::on_device_allocator::OnDeviceAllocator>,
+}
+
+impl std::convert::AsRef<Disk> for Disk {
+    fn as_ref(&self) -> &Disk {
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,6 +102,9 @@ impl Disk {
         let uuid = Uuid::new_v4();
         let capacity_bytes = Self::get_available_space(&path)?;
         
+        // Detect storage tier
+        let tier = Self::detect_tier(&path);
+        
         // Create fragments directory (only for directory-backed disks)
         let fragments_dir = path.join("fragments");
         fs::create_dir_all(&fragments_dir)
@@ -102,6 +117,7 @@ impl Disk {
             used_bytes: 0,
             health: DiskHealth::Healthy,
             kind: DiskKind::Directory,
+            tier,
             allocator: None,
             free_index: None,
             on_device_allocator: None,
@@ -118,6 +134,9 @@ impl Disk {
         // Do not create directories on raw devices
         let uuid = Uuid::new_v4();
         let capacity_bytes = Self::get_block_device_size(&path)?;
+        
+        // Detect storage tier (use /tmp as probe location for block devices)
+        let tier = Self::detect_tier(&std::path::PathBuf::from("/tmp"));
 
         let mut disk = Disk {
             uuid,
@@ -126,6 +145,7 @@ impl Disk {
             used_bytes: 0,
             health: DiskHealth::Healthy,
             kind: DiskKind::BlockDevice,
+            tier,
             allocator: None,
             free_index: None,
             on_device_allocator: None,
@@ -220,6 +240,32 @@ impl Disk {
         Ok(size)
     }
 
+    /// Detect storage tier by measuring I/O latency
+    fn detect_tier(path: &Path) -> StorageTier {
+        // Perform latency probe: write small file and measure time
+        let test_file = path.join("latency_probe.tmp");
+        let start = Instant::now();
+        
+        // Try to write a small test file
+        if let Ok(()) = fs::write(&test_file, b"latency test") {
+            let elapsed = start.elapsed();
+            let _ = fs::remove_file(&test_file); // Clean up
+            
+            // Classify based on latency thresholds
+            let latency_ms = elapsed.as_millis() as u32;
+            if latency_ms < 5 {  // Fast NVMe/SSD
+                StorageTier::Hot
+            } else if latency_ms < 50 {  // HDD
+                StorageTier::Warm
+            } else {  // Slow storage
+                StorageTier::Cold
+            }
+        } else {
+            // If probe fails, default to Warm
+            StorageTier::Warm
+        }
+    }
+
     /// Initialize allocator and free-extent index for directory-backed disk
     fn init_allocator_and_index(&mut self) -> Result<()> {
         // Use default allocation unit = 1 MiB (matching extent size)
@@ -236,7 +282,7 @@ impl Disk {
         };
 
         // If free extent index exists, load it; otherwise build from allocator free bits
-        let mut index = if index_path.exists() {
+        let index = if index_path.exists() {
             crate::free_extent::FreeExtentIndex::new(Some(index_path.clone()))?
         } else {
             let mut idx = crate::free_extent::FreeExtentIndex::new(Some(index_path.clone()))?;
@@ -313,6 +359,7 @@ impl Disk {
         fragment_index: usize,
         data: &[u8],
     ) -> Result<Option<crate::on_device_allocator::OnDevicePlacement>> {
+        eprintln!("[DISK DEBUG] write_fragment start: extent={}, fragment_index={}, size={}", extent_uuid, fragment_index, data.len());
         // Handle block device backed disks using on-device allocator when available
         if self.kind == DiskKind::BlockDevice {
             if let Some(oda) = &mut self.on_device_allocator {
@@ -329,11 +376,14 @@ impl Disk {
                 let n_units = ((hdr.total_length + (16+4+8+32+4) as u64) + oda.unit_size - 1) / oda.unit_size;
                 let start = oda.allocate_contiguous(n_units).ok_or_else(|| anyhow!("Failed to allocate on-device space"))?;
 
+                eprintln!("[DISK DEBUG] block device: before CrashPoint::BeforeFragmentWrite");
                 #[cfg(test)]
                 check_crash_point(CrashPoint::BeforeFragmentWrite)?;
 
+                eprintln!("[DISK DEBUG] block device: calling write_fragment_at");
                 let placement = oda.write_fragment_at(start, data, &hdr)?;
 
+                eprintln!("[DISK DEBUG] block device: after write_fragment_at, before CrashPoint::AfterFragmentWrite");
                 #[cfg(test)]
                 check_crash_point(CrashPoint::AfterFragmentWrite)?;
 
@@ -343,8 +393,10 @@ impl Disk {
                     anyhow::bail!("Fragment verification failed on device");
                 }
 
+                eprintln!("[DISK DEBUG] block device: successful write; saving disk metadata");
                 self.used_bytes += data.len() as u64;
                 self.save()?;
+                eprintln!("[DISK DEBUG] block device: save complete");
                 return Ok(Some(placement));
             } else {
                 return Err(anyhow!("Block device missing on-device allocator (not formatted)"));
@@ -354,6 +406,7 @@ impl Disk {
         // Regular directory-backed behavior
         let fragment_path = self.fragment_path(extent_uuid, fragment_index);
         
+        eprintln!("[DISK DEBUG] dir-backed: before CrashPoint::BeforeFragmentWrite");
         #[cfg(test)]
         check_crash_point(CrashPoint::BeforeFragmentWrite)?;
         
@@ -361,8 +414,10 @@ impl Disk {
          let mut guard = TempFragmentGuard::new(temp_path.clone());
          {
              // Use alignment-aware write (prefer direct when available)
+             eprintln!("[DISK DEBUG] writing to temp fragment {}",&temp_path.display());
              if let Err(e) = crate::io_alignment::write_aligned_file(&temp_path, data, true) {
                  // Fallback to buffered write if aligned/direct write fails
+                 eprintln!("[DISK DEBUG] aligned write failed: {}", e);
                  let mut file = File::create(&temp_path)
                      .context("Failed to open temp fragment file")?;
                  file.write_all(data)
@@ -373,14 +428,17 @@ impl Disk {
              }
          }
          
+         eprintln!("[DISK DEBUG] dir-backed: before CrashPoint::AfterFragmentWrite");
          #[cfg(test)]
          check_crash_point(CrashPoint::AfterFragmentWrite)?;
          
+         eprintln!("[DISK DEBUG] renaming temp fragment to final location");
          fs::rename(&temp_path, &fragment_path)
              .context("Failed to commit fragment")?;
          guard.commit();
 
          // Verify readback
+         eprintln!("[DISK DEBUG] verifying fragment readback");
          let written = fs::read(&fragment_path)
              .context("Failed to verify fragment readback")?;
          if written != data {
@@ -396,16 +454,45 @@ impl Disk {
              }
          }
         
+        eprintln!("[DISK DEBUG] updating used_bytes and saving disk metadata");
         self.used_bytes += data.len() as u64;
         self.save()?;
+        eprintln!("[DISK DEBUG] disk save complete");
         
         Ok(None)
     }
     
     /// Read a fragment from disk
     pub fn read_fragment(&self, extent_uuid: &Uuid, fragment_index: usize) -> Result<Vec<u8>> {
+        // Handle block device backed disks using on-device allocator when available
+        if self.kind == DiskKind::BlockDevice {
+            if let Some(oda) = &self.on_device_allocator {
+                // For block devices, we need to find the placement information
+                // This requires looking up the fragment location from metadata
+                // For now, return an error - this should be handled by the caller
+                return Err(anyhow!("Block device fragment reading requires placement info"));
+            } else {
+                return Err(anyhow!("Block device missing on-device allocator"));
+            }
+        }
+
+        // Regular directory-backed behavior
         let fragment_path = self.fragment_path(extent_uuid, fragment_index);
         fs::read(&fragment_path).context("Failed to read fragment")
+    }
+
+    /// Read a fragment from block device using placement information
+    pub fn read_fragment_at_placement(&self, placement: &crate::on_device_allocator::OnDevicePlacement) -> Result<Vec<u8>> {
+        if self.kind != DiskKind::BlockDevice {
+            return Err(anyhow!("read_fragment_at_placement only supported for block devices"));
+        }
+
+        if let Some(oda) = &self.on_device_allocator {
+            let (_header, data) = oda.read_fragment_at(placement.start_unit)?;
+            Ok(data)
+        } else {
+            Err(anyhow!("Block device missing on-device allocator"))
+        }
     }
 
     /// Check if a fragment exists

@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 use uuid::Uuid;
 

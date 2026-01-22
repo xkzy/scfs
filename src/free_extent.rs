@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FreeRun {
@@ -16,7 +16,7 @@ struct FreeExtentOnDisk {
 }
 
 /// In-memory free-extent index with persistence
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct FreeExtentIndex {
     /// Map start -> len
     runs: BTreeMap<u64, u64>,

@@ -119,16 +119,12 @@ impl StorageEngine {
             return Err(anyhow!("Only full file writes at offset 0 are supported"));
         }
         
-        // Determine redundancy policy based on file size
-        let redundancy = if data.len() < DEFAULT_EXTENT_SIZE {
-            // Small files: use replication
-            RedundancyPolicy::Replication { copies: 3 }
-        } else {
-            // Large files: use erasure coding
-            RedundancyPolicy::ErasureCoding {
-                data_shards: 4,
-                parity_shards: 2,
-            }
+        // Phase 5.3: Use adaptive engine to determine optimal redundancy policy based on file size
+        let redundancy = {
+            let adaptive = self.adaptive_engine.read().unwrap();
+            let recommended = adaptive.recommend_redundancy(data.len());
+            log::debug!("Adaptive engine recommends redundancy: {:?} for {} bytes", recommended, data.len());
+            recommended
         };
         
         // Split into extents using correct chunk boundaries
@@ -142,6 +138,11 @@ impl StorageEngine {
                 let chunk = &data[chunk_start..chunk_end];
 
                 let fragments = redundancy::encode(chunk, extent.redundancy)?;
+                
+                // Phase 5.2: Note - write_batcher is designed for batching multiple independent writes
+                // In this sequential write flow, extents are placed one at a time for atomicity
+                // Batching would require restructuring to support concurrent extent placement
+                
                 if let Err(err) = self.placement.place_extent(&mut extent, &mut disks, &fragments) {
                     // Cleanup fragments from previously written extents before exiting
                     for previous in &written_extents {
@@ -166,6 +167,8 @@ impl StorageEngine {
             let metadata = self.metadata.read().unwrap();
             for extent in &written_extents {
                 metadata.save_extent(extent)?;
+                // Phase 5.2: Populate metadata cache with newly written extents
+                self.metadata_cache.put(extent.uuid, extent.clone());
             }
 
             let extent_map = ExtentMap {

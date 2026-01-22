@@ -806,10 +806,38 @@ impl crate::storage_engine::FilesystemInterface for StorageEngine {
         let total_space: u64 = disks.iter().map(|d| d.lock().unwrap().capacity_bytes).sum();
         let used_space: u64 = disks.iter().map(|d| d.lock().unwrap().used_bytes).sum();
 
+        // Access metadata manager for counting
+        let metadata_w = self.metadata.write().unwrap();
+
         Ok(crate::storage_engine::FilesystemStats {
-            total_files: 0, // TODO: implement proper counting
-            total_dirs: 1,  // at least root
-            total_size: 0,  // TODO: implement proper summing
+            // Count files and directories by scanning inode_table persisted entries
+            total_files: {
+                let mut count = 0u64;
+                for ino in metadata_w.inode_table.list_keys() {
+                    if let Some(inode) = metadata_w.inode_table.get(&ino) {
+                        if inode.file_type == crate::metadata::FileType::RegularFile { count += 1; }
+                    }
+                }
+                count
+            },
+            total_dirs: {
+                let mut count = 0u64;
+                for ino in metadata_w.inode_table.list_keys() {
+                    if let Some(inode) = metadata_w.inode_table.get(&ino) {
+                        if inode.file_type == crate::metadata::FileType::Directory { count += 1; }
+                    }
+                }
+                if count == 0 { 1 } else { count }
+            },
+            total_size: {
+                let mut total = 0u64;
+                for ino in metadata_w.inode_table.list_keys() {
+                    if let Some(inode) = metadata_w.inode_table.get(&ino) {
+                        total = total.saturating_add(inode.size);
+                    }
+                }
+                total
+            },
             used_space,
             free_space: total_space - used_space,
         })

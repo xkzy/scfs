@@ -43,7 +43,7 @@ cat << 'EOF'
 
 📊 PROJECT STATS
   Lines of Code:    2,362 lines of Rust
-  Binary Size:      3.4 MB (release build)
+  Binary Size:      3.5 MB (release build)
   Test Coverage:    8 unit tests (100% passing)
   Documentation:    1,570+ lines across 6 files
   

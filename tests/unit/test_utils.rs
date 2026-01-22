@@ -2,7 +2,6 @@ use std::sync::mpsc::channel;
 use std::thread;
 use std::time::Duration;
 // tempfile is a dev-dependency used only by tests
-#[cfg(test)]
 use tempfile::TempDir;
 use std::path::PathBuf;
 
@@ -29,7 +28,6 @@ where
 }
 
 /// Create a test environment: pool tempdir, disk tempdirs, metadata manager and Disk objects.
-#[cfg(test)]
 pub fn setup_test_env() -> (TempDir, Vec<TempDir>, MetadataManager, Vec<Disk>) {
     let pool_dir = tempfile::tempdir().unwrap();
 

@@ -7,10 +7,10 @@ mod cli;
 mod config;
 mod crash_sim;
 mod diagnostics;
-mod disk;
+pub mod disk;
 // test_utils moved into tests/unit; expose helper shim to compile test-only APIs
 #[cfg(test)]
-mod test_utils {
+pub mod test_utils {
     include!("../tests/unit/test_utils.rs");
 }
 
@@ -41,7 +41,7 @@ mod redundancy;
 mod scheduler;
 mod scrubber;
 mod scrub_daemon;
-mod storage;
+pub mod storage;
 mod write_optimizer;
 mod adaptive;
 mod snapshots;

@@ -381,8 +381,9 @@ mod tests {
         let stats = storage.stat().unwrap();
 
         assert_eq!(stats.total_dirs, 1); // Simplified implementation only counts root
-        assert_eq!(stats.total_files, 0); // Simplified implementation doesn't count files
-        assert_eq!(stats.total_size, 0); // TODO: implement proper summing
+        // total_files and total_size should be non-zero after writes
+        assert!(stats.total_files >= 1);
+        assert!(stats.total_size >= data1.len() as u64 + data2.len() as u64);
         assert!(stats.free_space > 0);
     }
 

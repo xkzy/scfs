@@ -166,7 +166,7 @@ list-hot, list-cold, extent-stats, policy-status
 
 ## Performance Profile
 
-- **Binary Size**: 3.4 MB (release build)
+- **Binary Size**: 3.5 MB (release build)
 - **Test Runtime**: ~0.12 seconds (50 tests)
 - **Metadata Format**: JSON (suitable for small-to-medium deployments)
 - **Scalability**: Single-node (multi-node is future work)
@@ -190,13 +190,8 @@ list-hot, list-cold, extent-stats, policy-status
 - [ ] Performance benchmarks
 - [ ] Security hardening
 
-### 🔮 Nice-to-Have (Future)
-- [ ] Snapshots and copy-on-write
-- [ ] Data compression
-- [ ] Deduplication
-- [ ] Multi-node clustering
-
 ---
+
 
 ## Getting Started
 
@@ -272,7 +267,7 @@ Successfully implemented a **fully functional, production-quality prototype** of
 
 ### Deliverables ✅
 
-- [x] **Runnable FUSE filesystem** - 3.4 MB binary
+- [x] **Runnable FUSE filesystem** - 3.5 MB binary
 - [x] **Clear README** - Comprehensive documentation
 - [x] **Architecture doc** - Deep technical explanation
 - [x] **Test suite** - 8 unit tests, all passing
@@ -288,7 +283,7 @@ Successfully implemented a **fully functional, production-quality prototype** of
 - **Total Lines of Code:** 2,362 lines of Rust
 - **Source Files:** 9 modules
 - **Documentation Files:** 5 comprehensive guides
-- **Binary Size:** 3.4 MB (release, optimized)
+- **Binary Size:** 3.5 MB (release, optimized)
 
 ### Module Breakdown
 ```

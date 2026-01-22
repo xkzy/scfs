@@ -1047,6 +1047,10 @@ Successfully implemented a **fully production-hardened, crash-consistent filesys
 - ✅ Operator tools
 
 ### Nice to Have (Phase 5-8)
+- [ ] Snapshots and copy-on-write
+- [ ] Data compression
+- [ ] Deduplication
+- [ ] Multi-node clustering
 - ✅ Snapshots
 - ✅ Performance optimizations
 - ✅ Online upgrades

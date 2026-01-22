@@ -1,8 +1,8 @@
-use anyhow::{anyhow, Context, Result};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use anyhow::{Context, Result};
+use serde::{de::DeserializeOwned, Serialize, Deserialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// Generic persisted B-tree map using bincode serialization with interior mutability.
